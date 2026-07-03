@@ -1,0 +1,168 @@
+name: Latest APK Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: latest-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    env:
+      BUILD_TIME: ${{ github.run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set build version
+        id: version
+        shell: bash
+        run: |
+          echo "version=3.$(TZ=Asia/Shanghai date +%y.%m%d%H)" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('modules/web/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Build web assets
+        working-directory: modules/web
+        shell: bash
+        run: |
+          pnpm install
+          pnpm build
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Prepare signing config
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.RELEASE_KEY_STORE }}" ]; then
+            echo "${{ secrets.RELEASE_KEY_STORE }}" | base64 --decode > "$GITHUB_WORKSPACE/app/legado.jks"
+            key_alias="${{ secrets.RELEASE_KEY_ALIAS }}"
+            if [ -z "$key_alias" ]; then
+              key_alias="legado"
+            fi
+            {
+              echo "RELEASE_KEY_PASSWORD=${{ secrets.RELEASE_KEY_PASSWORD }}"
+              echo "RELEASE_STORE_PASSWORD=${{ secrets.RELEASE_STORE_PASSWORD }}"
+              echo "RELEASE_STORE_FILE=./legado.jks"
+              echo "RELEASE_KEY_ALIAS=$key_alias"
+            } >> "$GITHUB_WORKSPACE/gradle.properties"
+          else
+            cp "$GITHUB_WORKSPACE/.github/workflows/legado.jks" "$GITHUB_WORKSPACE/app/legado.jks"
+            {
+              echo "RELEASE_STORE_FILE=./legado.jks"
+              echo "RELEASE_KEY_ALIAS=legado"
+              echo "RELEASE_STORE_PASSWORD=gedoor_legado"
+              echo "RELEASE_KEY_PASSWORD=gedoor_legado"
+            } >> "$GITHUB_WORKSPACE/gradle.properties"
+          fi
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          sed -i "/def version/c\def version = \"${{ steps.version.outputs.version }}\"" "$GITHUB_WORKSPACE/app/build.gradle"
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+          "$GITHUB_WORKSPACE/gradlew" :app:assembleRelease --build-cache --parallel --daemon --warning-mode all
+
+      - name: Package release files
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/apk"
+          apk_file="$(find "$GITHUB_WORKSPACE/app/build/outputs/apk" -name '*.apk' | head -n 1)"
+          if [ -z "$apk_file" ]; then
+            echo "未找到生成的 APK 文件"
+            exit 1
+          fi
+          cp "$apk_file" "$GITHUB_WORKSPACE/apk/legado_app_latest.apk"
+          (
+            cd "$GITHUB_WORKSPACE/apk"
+            sha256sum "legado_app_latest.apk" > "legado_app_latest.apk.sha256"
+          )
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: legado-app-latest
+          path: |
+            ${{ github.workspace }}/apk/legado_app_latest.apk
+            ${{ github.workspace }}/apk/legado_app_latest.apk.sha256
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/release-notes.md" <<EOF
+          自动构建的最新 APK 安装包。
+
+          - 分支: \`${{ github.ref_name }}\`
+          - 提交: \`${{ github.sha }}\`
+          - 版本: \`${{ steps.version.outputs.version }}\`
+          - 构建时间: \`${{ steps.version.outputs.built_at }}\`
+
+          下载文件:
+          - \`legado_app_latest.apk\`
+          - \`legado_app_latest.apk.sha256\`
+          EOF
+
+      - name: Move latest tag to current commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          git tag -f latest
+          git push origin refs/tags/latest --force
+
+      - name: Create or update latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest "$GITHUB_WORKSPACE/apk/legado_app_latest.apk" "$GITHUB_WORKSPACE/apk/legado_app_latest.apk.sha256" --clobber
+            gh release edit latest --title "Latest APK" --notes-file "$GITHUB_WORKSPACE/release-notes.md"
+          else
+            gh release create latest \
+              "$GITHUB_WORKSPACE/apk/legado_app_latest.apk" \
+              "$GITHUB_WORKSPACE/apk/legado_app_latest.apk.sha256" \
+              --title "Latest APK" \
+              --notes-file "$GITHUB_WORKSPACE/release-notes.md"
+          fi
