@@ -8,12 +8,12 @@
     <div class="tool-bar" :style="leftBarTheme">
       <div class="tools">
         <el-popover
-          placement="right"
-          :width="popupWidth"
+          :placement="desktopPopoverPlacement"
+          :width="catalogPopupWidth"
           trigger="click"
           :show-arrow="false"
           v-model:visible="popCataVisible"
-          popper-class="pop-cata"
+          :popper-class="catalogPopoverClass"
         >
           <PopCatalog @getContent="getContent" class="popup" />
           <template #reference>
@@ -24,12 +24,12 @@
           </template>
         </el-popover>
         <el-popover
-          placement="right"
-          :width="popupWidth"
+          :placement="desktopPopoverPlacement"
+          :width="settingsPopupWidth"
           trigger="click"
           :show-arrow="false"
           v-model:visible="readSettingsVisible"
-          popper-class="pop-setting"
+          :popper-class="settingsPopoverClass"
         >
           <read-settings class="popup" />
           <template #reference>
@@ -216,6 +216,29 @@ const popupWidth = computed(() => {
     return window.innerWidth - 33
   }
 })
+const desktopPopoverPlacement = computed(() => {
+  return miniInterface.value ? 'right' : 'left-start'
+})
+const catalogPopupWidth = computed(() => {
+  if (miniInterface.value) {
+    return popupWidth.value
+  }
+  return Math.min(popupWidth.value, 560)
+})
+const settingsPopupWidth = computed(() => {
+  if (miniInterface.value) {
+    return popupWidth.value
+  }
+  return Math.min(popupWidth.value, 520)
+})
+const catalogPopoverClass = computed(() => {
+  return miniInterface.value ? 'pop-cata pop-cata-mobile' : 'pop-cata pop-cata-desktop'
+})
+const settingsPopoverClass = computed(() => {
+  return miniInterface.value
+    ? 'pop-setting pop-setting-mobile'
+    : 'pop-setting pop-setting-desktop'
+})
 const bodyTheme = computed(() => {
   return {
     background: bodyColor.value,
@@ -231,7 +254,7 @@ const showToolBar = ref(false)
 const leftBarTheme = computed(() => {
   return {
     background: popupColor.value,
-    marginLeft: miniInterface.value
+    marginRight: miniInterface.value
       ? 0
       : -(store.config.readWidth / 2 + 68) + 'px',
     display: miniInterface.value && !showToolBar.value ? 'none' : 'block',
@@ -668,12 +691,21 @@ onBeforeRouteLeave(async (to, from, next) => {
 </script>
 
 <style lang="scss" scoped>
-:deep(.pop-setting) {
+:deep(.pop-setting-desktop) {
+  margin-right: 12px;
+  top: 0;
+}
+
+:deep(.pop-setting-mobile) {
   margin-left: 68px;
   top: 0;
 }
 
-:deep(.pop-cata) {
+:deep(.pop-cata-desktop) {
+  margin-right: 12px;
+}
+
+:deep(.pop-cata-mobile) {
   margin-left: 10px;
 }
 
@@ -689,7 +721,7 @@ onBeforeRouteLeave(async (to, from, next) => {
   .tool-bar {
     position: fixed;
     top: 0;
-    left: 50%;
+    right: 50%;
     z-index: 100;
 
     .tools {
@@ -831,8 +863,9 @@ onBeforeRouteLeave(async (to, from, next) => {
 
     .tool-bar {
       left: 0;
+      right: auto;
       width: 100vw;
-      margin-left: 0 !important;
+      margin-right: 0 !important;
 
       .tools {
         flex-direction: row;
