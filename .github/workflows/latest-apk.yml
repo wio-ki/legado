@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+    paths:
+      - ".github/workflows/latest-apk.yml"
+      - "app/**"
+      - "modules/**"
+      - "gradle/**"
+      - "build.gradle"
+      - "settings.gradle"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradlew.bat"
   workflow_dispatch:
 
 permissions:
@@ -88,7 +98,16 @@ jobs:
               echo "RELEASE_KEY_ALIAS=$key_alias"
             } >> "$GITHUB_WORKSPACE/gradle.properties"
           else
-            cp "$GITHUB_WORKSPACE/.github/workflows/legado.jks" "$GITHUB_WORKSPACE/app/legado.jks"
+            keytool -genkeypair \
+              -alias legado \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 36500 \
+              -keystore "$GITHUB_WORKSPACE/app/legado.jks" \
+              -storepass gedoor_legado \
+              -keypass gedoor_legado \
+              -dname "CN=legado-local, OU=GitHub Actions, O=wio-ki, L=Shanghai, ST=Shanghai, C=CN" \
+              -noprompt
             {
               echo "RELEASE_STORE_FILE=./legado.jks"
               echo "RELEASE_KEY_ALIAS=legado"
