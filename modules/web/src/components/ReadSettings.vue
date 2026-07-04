@@ -397,10 +397,10 @@ const autoScrollSpeed = computed(() => {
   return store.config.autoScrollSpeed
 })
 const moreAutoScrollSpeed = () => {
-  if (store.config.autoScrollSpeed < 200) store.config.autoScrollSpeed += 10
+  if (store.config.autoScrollSpeed < 200) store.config.autoScrollSpeed += 1
 }
 const lessAutoScrollSpeed = () => {
-  if (store.config.autoScrollSpeed > 10) store.config.autoScrollSpeed -= 10
+  if (store.config.autoScrollSpeed > 1) store.config.autoScrollSpeed -= 1
 }
 const autoScrollDirection = computed(() => {
   return store.config.autoScrollDirection
