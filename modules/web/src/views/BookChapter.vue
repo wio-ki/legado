@@ -353,6 +353,8 @@ const noPoint = ref(true)
 let autoScrollFrame = 0
 let autoScrollLastTime: number | null = null
 let autoReadJumping = false
+let manualChapterAutoAdvancing = false
+let lastScrollTop = 0
 const autoReadIndicatorOffset = ref(0)
 const autoReadMode = computed(() => {
   return store.config.autoReadMode === 'page' ? 'page' : 'scroll'
@@ -383,6 +385,9 @@ const resetAutoReadIndicator = () => {
   autoReadIndicatorOffset.value = 0
   autoReadJumping = false
 }
+const syncLastScrollTop = () => {
+  lastScrollTop = getScrollElement().scrollTop
+}
 const stopAutoScroll = (message?: string, syncState = true) => {
   clearAutoScrollFrame()
   autoScrollLastTime = null
@@ -405,6 +410,7 @@ const toNextChapterByAutoRead = () => {
   if (typeof catalog.value[nextIndex] === 'undefined') {
     return false
   }
+  store.setContentLoading(true)
   getContent(nextIndex)
   store.saveBookProgress()
   return true
@@ -555,11 +561,40 @@ const handleUserScrollIntent = () => {
     stopAutoScroll('已停止自动阅读')
   }
 }
+const handleChapterEndAutoAdvance = () => {
+  const scrollElement = getScrollElement()
+  const currentScrollTop = scrollElement.scrollTop
+  const scrollingDown = currentScrollTop > lastScrollTop
+  lastScrollTop = currentScrollTop
+  if (
+    store.autoScrollActive ||
+    infiniteLoading.value ||
+    noPoint.value ||
+    isLoading.value ||
+    autoReadJumping ||
+    manualChapterAutoAdvancing ||
+    !scrollingDown
+  ) {
+    return
+  }
+  const maxScrollTop = Math.max(
+    0,
+    scrollElement.scrollHeight - scrollElement.clientHeight,
+  )
+  if (maxScrollTop <= 0 || maxScrollTop - currentScrollTop > 1) {
+    return
+  }
+  manualChapterAutoAdvancing = true
+  if (!toNextChapterByAutoRead()) {
+    manualChapterAutoAdvancing = false
+  }
+}
 const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
   if (reloadChapter) {
     //展示进度条
     store.setShowContent(false)
     resetAutoReadIndicator()
+    manualChapterAutoAdvancing = false
     //强制滚回顶层
     jump(top.value, { duration: 0 })
     //从目录，按钮切换章节时保存进度 预加载时不保存
@@ -585,6 +620,8 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
         store.setContentLoading(true)
         noPoint.value = false
         store.setShowContent(true)
+        manualChapterAutoAdvancing = false
+        nextTick(syncLastScrollTop)
         if (!res.data.isSuccess) {
           throw res.data
         }
@@ -593,6 +630,8 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
         const content = ['获取章节内容失败！']
         chapterData.value.push({ index, content, title })
         store.setShowContent(true)
+        manualChapterAutoAdvancing = false
+        nextTick(syncLastScrollTop)
         throw err
       },
     ),
@@ -767,6 +806,7 @@ onMounted(async () => {
     isSeachBook,
   }
   onResize()
+  syncLastScrollTop()
   window.addEventListener('resize', onResize)
   loadingWrapper(
     store.loadWebCatalog(book).then(chapters => {
@@ -774,6 +814,7 @@ onMounted(async () => {
       getContent(chapterIndex, true, chapterPos)
       window.addEventListener('keyup', handleKeyPress)
       window.addEventListener('keydown', ignoreKeyPress)
+      window.addEventListener('scroll', handleChapterEndAutoAdvance)
       window.addEventListener('wheel', handleUserScrollIntent)
       window.addEventListener('touchstart', handleUserScrollIntent)
       // 兼容Safari < 14
@@ -795,6 +836,7 @@ onUnmounted(() => {
   window.removeEventListener('keyup', handleKeyPress)
   window.removeEventListener('keydown', ignoreKeyPress)
   window.removeEventListener('resize', onResize)
+  window.removeEventListener('scroll', handleChapterEndAutoAdvance)
   window.removeEventListener('wheel', handleUserScrollIntent)
   window.removeEventListener('touchstart', handleUserScrollIntent)
   // 兼容Safari < 14
@@ -837,6 +879,7 @@ onBeforeRouteLeave(async (to, from, next) => {
   // 弹窗时停止响应按键翻页
   stopAutoScroll(undefined)
   window.removeEventListener('keyup', handleKeyPress)
+  window.removeEventListener('scroll', handleChapterEndAutoAdvance)
   autoReadVisible.value = false
   await addToBookShelfConfirm()
   next()
