@@ -354,6 +354,7 @@ let autoScrollFrame = 0
 let autoScrollLastTime: number | null = null
 let autoReadJumping = false
 let manualChapterAutoAdvancing = false
+let manualChapterAdvanceArmed = false
 let lastScrollTop = 0
 const autoReadIndicatorOffset = ref(0)
 const autoReadMode = computed(() => {
@@ -384,6 +385,10 @@ const clearAutoScrollFrame = () => {
 const resetAutoReadIndicator = () => {
   autoReadIndicatorOffset.value = 0
   autoReadJumping = false
+}
+const resetManualChapterAdvanceState = () => {
+  manualChapterAutoAdvancing = false
+  manualChapterAdvanceArmed = false
 }
 const syncLastScrollTop = () => {
   lastScrollTop = getScrollElement().scrollTop
@@ -572,19 +577,47 @@ const handleChapterEndAutoAdvance = () => {
     noPoint.value ||
     isLoading.value ||
     autoReadJumping ||
-    manualChapterAutoAdvancing ||
-    !scrollingDown
+    manualChapterAutoAdvancing
   ) {
+    manualChapterAdvanceArmed = false
     return
   }
   const maxScrollTop = Math.max(
     0,
     scrollElement.scrollHeight - scrollElement.clientHeight,
   )
-  if (maxScrollTop <= 0 || maxScrollTop - currentScrollTop > 1) {
+  const isAtBottom = maxScrollTop > 0 && maxScrollTop - currentScrollTop <= 1
+  if (!isAtBottom) {
+    manualChapterAdvanceArmed = false
+    return
+  }
+  if (scrollingDown) {
+    manualChapterAdvanceArmed = true
+  }
+}
+const handleChapterEndAdvanceWheel = (event: WheelEvent) => {
+  if (event.deltaY <= 0) return
+  if (
+    store.autoScrollActive ||
+    infiniteLoading.value ||
+    noPoint.value ||
+    isLoading.value ||
+    autoReadJumping ||
+    manualChapterAutoAdvancing ||
+    !manualChapterAdvanceArmed
+  ) {
+    return
+  }
+  const scrollElement = getScrollElement()
+  const maxScrollTop = Math.max(
+    0,
+    scrollElement.scrollHeight - scrollElement.clientHeight,
+  )
+  if (maxScrollTop <= 0 || maxScrollTop - scrollElement.scrollTop > 1) {
     return
   }
   manualChapterAutoAdvancing = true
+  manualChapterAdvanceArmed = false
   if (!toNextChapterByAutoRead()) {
     manualChapterAutoAdvancing = false
   }
@@ -594,7 +627,7 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
     //展示进度条
     store.setShowContent(false)
     resetAutoReadIndicator()
-    manualChapterAutoAdvancing = false
+    resetManualChapterAdvanceState()
     //强制滚回顶层
     jump(top.value, { duration: 0 })
     //从目录，按钮切换章节时保存进度 预加载时不保存
@@ -620,7 +653,7 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
         store.setContentLoading(true)
         noPoint.value = false
         store.setShowContent(true)
-        manualChapterAutoAdvancing = false
+        resetManualChapterAdvanceState()
         nextTick(syncLastScrollTop)
         if (!res.data.isSuccess) {
           throw res.data
@@ -630,7 +663,7 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
         const content = ['获取章节内容失败！']
         chapterData.value.push({ index, content, title })
         store.setShowContent(true)
-        manualChapterAutoAdvancing = false
+        resetManualChapterAdvanceState()
         nextTick(syncLastScrollTop)
         throw err
       },
@@ -815,6 +848,7 @@ onMounted(async () => {
       window.addEventListener('keyup', handleKeyPress)
       window.addEventListener('keydown', ignoreKeyPress)
       window.addEventListener('scroll', handleChapterEndAutoAdvance)
+      window.addEventListener('wheel', handleChapterEndAdvanceWheel)
       window.addEventListener('wheel', handleUserScrollIntent)
       window.addEventListener('touchstart', handleUserScrollIntent)
       // 兼容Safari < 14
@@ -837,6 +871,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', ignoreKeyPress)
   window.removeEventListener('resize', onResize)
   window.removeEventListener('scroll', handleChapterEndAutoAdvance)
+  window.removeEventListener('wheel', handleChapterEndAdvanceWheel)
   window.removeEventListener('wheel', handleUserScrollIntent)
   window.removeEventListener('touchstart', handleUserScrollIntent)
   // 兼容Safari < 14
@@ -879,6 +914,7 @@ onBeforeRouteLeave(async (to, from, next) => {
   // 弹窗时停止响应按键翻页
   stopAutoScroll(undefined)
   window.removeEventListener('keyup', handleKeyPress)
+  window.removeEventListener('wheel', handleChapterEndAdvanceWheel)
   window.removeEventListener('scroll', handleChapterEndAutoAdvance)
   autoReadVisible.value = false
   await addToBookShelfConfirm()
