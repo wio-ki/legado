@@ -18,6 +18,7 @@ const default_config: webReadConfig = {
   infiniteLoading: false,
   customFontName: '',
   jumpDuration: 1000,
+  autoReadMode: 'scroll',
   autoScrollSpeed: 40,
   autoScrollDirection: 'down',
   spacing: {
@@ -45,6 +46,7 @@ export const useBookStore = defineStore('book', {
       config: default_config,
       miniInterface: false,
       readSettingsVisible: false,
+      autoReadVisible: false,
       autoScrollActive: false,
     }
   },
@@ -172,6 +174,9 @@ export const useBookStore = defineStore('book', {
     },
     setReadSettingsVisible(visible: boolean) {
       this.readSettingsVisible = visible
+    },
+    setAutoReadVisible(visible: boolean) {
+      this.autoReadVisible = visible
     },
     setAutoScrollActive(active: boolean) {
       this.autoScrollActive = active

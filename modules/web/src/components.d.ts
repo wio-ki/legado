@@ -7,6 +7,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AutoReadSettings: typeof import('./components/AutoReadSettings.vue')['default']
     BookItems: typeof import('./components/BookItems.vue')['default']
     CatalogItem: typeof import('./components/CatalogItem.vue')['default']
     ChapterContent: typeof import('./components/ChapterContent.vue')['default']

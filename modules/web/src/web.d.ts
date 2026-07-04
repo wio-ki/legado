@@ -6,6 +6,7 @@ export type webReadConfig = {
   infiniteLoading: boolean
   customFontName: string
   jumpDuration: number
+  autoReadMode: 'page' | 'scroll'
   autoScrollSpeed: number
   autoScrollDirection: 'down' | 'up'
   spacing: {

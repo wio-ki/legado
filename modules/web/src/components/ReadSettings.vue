@@ -149,68 +149,6 @@
             </div>
           </div>
         </li>
-        <li class="paragraph-spacing">
-          <i>滚动速度</i>
-          <div class="resize">
-            <div class="resize">
-              <span class="less" @click="lessAutoScrollSpeed">
-                <em class="iconfont">&#xe625;</em>
-              </span>
-              <b></b> <span class="lang">{{ autoScrollSpeed }}</span
-              ><b></b>
-              <span class="more" @click="moreAutoScrollSpeed"
-                ><em class="iconfont">&#xe626;</em></span
-              >
-            </div>
-          </div>
-        </li>
-        <li class="infinite-loading">
-          <i>滚动方向</i>
-          <span
-            class="infinite-loading-item"
-            :class="{ selected: autoScrollDirection === 'down' }"
-            @click="setAutoScrollDirection('down')"
-            >向下</span
-          >
-          <span
-            class="infinite-loading-item"
-            :class="{ selected: autoScrollDirection === 'up' }"
-            @click="setAutoScrollDirection('up')"
-            >向上</span
-          >
-        </li>
-        <li class="infinite-loading">
-          <i>自动滚动</i>
-          <span
-            class="infinite-loading-item"
-            :class="{ selected: autoScrollActive === false }"
-            @click="setAutoScrollActive(false)"
-            >停止</span
-          >
-          <span
-            class="infinite-loading-item"
-            :class="{ selected: autoScrollActive === true }"
-            @click="setAutoScrollActive(true)"
-            >开始</span
-          >
-        </li>
-        <li class="infinite-loading">
-          <i>无限加载</i>
-          <span
-            class="infinite-loading-item"
-            :key="0"
-            :class="{ selected: infiniteLoading == false }"
-            @click="setInfiniteLoading(false)"
-            >关闭</span
-          >
-          <span
-            class="infinite-loading-item"
-            :key="1"
-            :class="{ selected: infiniteLoading == true }"
-            @click="setInfiniteLoading(true)"
-            >开启</span
-          >
-        </li>
       </ul>
     </div>
   </div>
@@ -390,37 +328,6 @@ const moreJumpDuration = () => {
 const lessJumpDuration = () => {
   if (store.config.jumpDuration === 0) return
   store.config.jumpDuration -= 100
-}
-
-//自动滚动
-const autoScrollSpeed = computed(() => {
-  return store.config.autoScrollSpeed
-})
-const moreAutoScrollSpeed = () => {
-  if (store.config.autoScrollSpeed < 200) store.config.autoScrollSpeed += 1
-}
-const lessAutoScrollSpeed = () => {
-  if (store.config.autoScrollSpeed > 1) store.config.autoScrollSpeed -= 1
-}
-const autoScrollDirection = computed(() => {
-  return store.config.autoScrollDirection
-})
-const setAutoScrollDirection = (direction: 'down' | 'up') => {
-  store.config.autoScrollDirection = direction
-}
-const autoScrollActive = computed(() => {
-  return store.autoScrollActive
-})
-const setAutoScrollActive = (active: boolean) => {
-  store.setAutoScrollActive(active)
-}
-
-//无限加载
-const infiniteLoading = computed(() => {
-  return store.config.infiniteLoading
-})
-const setInfiniteLoading = (loading: boolean) => {
-  store.config.infiniteLoading = loading
 }
 </script>
 

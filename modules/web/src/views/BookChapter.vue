@@ -59,6 +59,22 @@
     </div>
     <div class="read-bar" :style="rightBarTheme">
       <div class="tools">
+        <el-popover
+          :placement="autoReadPopoverPlacement"
+          :width="autoReadPopupWidth"
+          trigger="click"
+          :show-arrow="false"
+          v-model:visible="autoReadVisible"
+          :popper-class="autoReadPopoverClass"
+        >
+          <auto-read-settings class="popup" />
+          <template #reference>
+            <div class="tool-icon auto-read-tool" :class="{ 'no-point': noPoint }">
+              <div class="auto-read-badge">AUTO</div>
+              <div class="icon-text">自动阅读</div>
+            </div>
+          </template>
+        </el-popover>
         <div
           class="tool-icon"
           :class="{ 'no-point': noPoint }"
@@ -79,6 +95,11 @@
     </div>
     <div class="chapter-bar"></div>
     <div class="chapter" ref="content" :style="chapterTheme">
+      <div
+        v-if="showAutoReadIndicator"
+        class="auto-read-indicator"
+        :style="autoReadIndicatorStyle"
+      ></div>
       <div class="content">
         <div class="top-bar" ref="top"></div>
         <div
@@ -123,6 +144,7 @@ const {
   catalog,
   popCataVisible,
   readSettingsVisible,
+  autoReadVisible,
   miniInterface,
   showContent,
   bookProgress,
@@ -219,6 +241,9 @@ const popupWidth = computed(() => {
 const desktopPopoverPlacement = computed(() => {
   return miniInterface.value ? 'right' : 'left-start'
 })
+const autoReadPopoverPlacement = computed(() => {
+  return miniInterface.value ? 'top' : 'left-start'
+})
 const catalogPopupWidth = computed(() => {
   if (miniInterface.value) {
     return popupWidth.value
@@ -231,6 +256,12 @@ const settingsPopupWidth = computed(() => {
   }
   return Math.min(popupWidth.value, 520)
 })
+const autoReadPopupWidth = computed(() => {
+  if (miniInterface.value) {
+    return Math.min(popupWidth.value, 360)
+  }
+  return 360
+})
 const catalogPopoverClass = computed(() => {
   return miniInterface.value ? 'pop-cata pop-cata-mobile' : 'pop-cata pop-cata-desktop'
 })
@@ -238,6 +269,11 @@ const settingsPopoverClass = computed(() => {
   return miniInterface.value
     ? 'pop-setting pop-setting-mobile'
     : 'pop-setting pop-setting-desktop'
+})
+const autoReadPopoverClass = computed(() => {
+  return miniInterface.value
+    ? 'pop-autoread pop-autoread-mobile'
+    : 'pop-autoread pop-autoread-desktop'
 })
 const bodyTheme = computed(() => {
   return {
@@ -265,7 +301,7 @@ const rightBarTheme = computed(() => {
     background: popupColor.value,
     marginRight: miniInterface.value
       ? 0
-      : -(store.config.readWidth / 2 + 52) + 'px',
+      : -(store.config.readWidth / 2 + 68) + 'px',
     display: miniInterface.value && !showToolBar.value ? 'none' : 'block',
   }
 })
@@ -316,8 +352,26 @@ const chapterData = ref<{ index: number; content: string[]; title: string }[]>(
 const noPoint = ref(true)
 let autoScrollFrame = 0
 let autoScrollLastTime: number | null = null
-const autoScrollDirection = computed(() => {
-  return store.config.autoScrollDirection === 'up' ? -1 : 1
+let autoReadJumping = false
+const autoReadIndicatorOffset = ref(0)
+const autoReadMode = computed(() => {
+  return store.config.autoReadMode === 'page' ? 'page' : 'scroll'
+})
+const showAutoReadIndicator = computed(() => {
+  return (
+    store.autoScrollActive &&
+    autoReadMode.value === 'page' &&
+    !noPoint.value &&
+    !isLoading.value
+  )
+})
+const autoReadIndicatorStyle = computed(() => {
+  return {
+    top: `${Math.max(0, autoReadIndicatorOffset.value)}px`,
+    width: miniInterface.value ? 'calc(100vw - 40px)' : readWidth.value,
+    left: miniInterface.value ? '20px' : '50%',
+    transform: miniInterface.value ? 'none' : 'translateX(-50%)',
+  }
 })
 const clearAutoScrollFrame = () => {
   if (autoScrollFrame !== 0) {
@@ -325,9 +379,14 @@ const clearAutoScrollFrame = () => {
     autoScrollFrame = 0
   }
 }
+const resetAutoReadIndicator = () => {
+  autoReadIndicatorOffset.value = 0
+  autoReadJumping = false
+}
 const stopAutoScroll = (message?: string, syncState = true) => {
   clearAutoScrollFrame()
   autoScrollLastTime = null
+  resetAutoReadIndicator()
   if (syncState && store.autoScrollActive) {
     store.setAutoScrollActive(false)
   }
@@ -338,16 +397,19 @@ const stopAutoScroll = (message?: string, syncState = true) => {
 const getLastLoadedChapterIndex = () => {
   return chapterData.value.slice(-1)[0]?.index ?? chapterIndex.value
 }
-const runAutoScroll = (timestamp: number) => {
-  if (!store.autoScrollActive) {
-    stopAutoScroll(undefined, false)
-    return
+const scheduleAutoScrollFrame = () => {
+  autoScrollFrame = requestAnimationFrame(runAutoScroll)
+}
+const toNextChapterByAutoRead = () => {
+  const nextIndex = chapterIndex.value + 1
+  if (typeof catalog.value[nextIndex] === 'undefined') {
+    return false
   }
-  if (document.visibilityState === 'hidden' || noPoint.value || isLoading.value) {
-    autoScrollLastTime = timestamp
-    autoScrollFrame = requestAnimationFrame(runAutoScroll)
-    return
-  }
+  getContent(nextIndex)
+  store.saveBookProgress()
+  return true
+}
+const runPageAutoRead = (timestamp: number) => {
   const scrollElement = getScrollElement()
   if (autoScrollLastTime === null) {
     autoScrollLastTime = timestamp
@@ -355,7 +417,67 @@ const runAutoScroll = (timestamp: number) => {
   const elapsedSeconds = (timestamp - autoScrollLastTime) / 1000
   autoScrollLastTime = timestamp
   if (elapsedSeconds <= 0) {
-    autoScrollFrame = requestAnimationFrame(runAutoScroll)
+    scheduleAutoScrollFrame()
+    return
+  }
+  const maxIndicatorOffset = Math.max(scrollElement.clientHeight - 2, 1)
+  autoReadIndicatorOffset.value = Math.min(
+    maxIndicatorOffset,
+    autoReadIndicatorOffset.value + store.config.autoScrollSpeed * elapsedSeconds,
+  )
+  if (autoReadIndicatorOffset.value >= maxIndicatorOffset) {
+    const maxScrollTop = Math.max(
+      0,
+      scrollElement.scrollHeight - scrollElement.clientHeight,
+    )
+    const remaining = Math.max(0, maxScrollTop - scrollElement.scrollTop)
+    if (remaining <= 1) {
+      if (!toNextChapterByAutoRead()) {
+        stopAutoScroll('已到达最后内容，自动阅读已停止')
+      } else {
+        autoScrollLastTime = null
+        resetAutoReadIndicator()
+        scheduleAutoScrollFrame()
+      }
+      return
+    }
+    autoReadJumping = true
+    clearAutoScrollFrame()
+    autoScrollLastTime = null
+    const jumpDistance = Math.min(
+      remaining,
+      Math.max(scrollElement.clientHeight - 100, 0),
+    )
+    if (jumpDistance <= 0) {
+      autoReadJumping = false
+      stopAutoScroll('已到达最后内容，自动阅读已停止')
+      return
+    }
+    canJump = false
+    jump(jumpDistance, {
+      duration: store.config.jumpDuration,
+      callback: () => {
+        canJump = true
+        autoReadJumping = false
+        autoReadIndicatorOffset.value = 0
+        if (store.autoScrollActive) {
+          scheduleAutoScrollFrame()
+        }
+      },
+    })
+    return
+  }
+  scheduleAutoScrollFrame()
+}
+const runScrollAutoRead = (timestamp: number) => {
+  const scrollElement = getScrollElement()
+  if (autoScrollLastTime === null) {
+    autoScrollLastTime = timestamp
+  }
+  const elapsedSeconds = (timestamp - autoScrollLastTime) / 1000
+  autoScrollLastTime = timestamp
+  if (elapsedSeconds <= 0) {
+    scheduleAutoScrollFrame()
     return
   }
   const maxScrollTop = Math.max(
@@ -364,40 +486,55 @@ const runAutoScroll = (timestamp: number) => {
   )
   const nextTop = Math.min(
     maxScrollTop,
-    Math.max(
-      0,
-      scrollElement.scrollTop +
-        autoScrollDirection.value * store.config.autoScrollSpeed * elapsedSeconds,
-    ),
+    Math.max(0, scrollElement.scrollTop + store.config.autoScrollSpeed * elapsedSeconds),
   )
   window.scrollTo(0, nextTop)
-  const isAtTop = scrollElement.scrollTop <= 1
   const isAtBottom = maxScrollTop - scrollElement.scrollTop <= 1
-  if (autoScrollDirection.value < 0 && isAtTop) {
-    stopAutoScroll('已到达页面顶部，自动滚动已停止')
-    return
-  }
-  if (autoScrollDirection.value > 0 && isAtBottom) {
+  if (isAtBottom) {
     const hasMoreChapters = catalog.value.length - 1 > getLastLoadedChapterIndex()
     if (!infiniteLoading.value) {
-      stopAutoScroll(
-        hasMoreChapters
-          ? '已到达本章底部，自动滚动已停止'
-          : '已到达最后内容，自动滚动已停止',
-      )
+      if (!toNextChapterByAutoRead()) {
+        stopAutoScroll('已到达最后内容，自动阅读已停止')
+      } else {
+        autoScrollLastTime = null
+        scheduleAutoScrollFrame()
+      }
       return
     }
     if (!hasMoreChapters) {
-      stopAutoScroll('已到达最后内容，自动滚动已停止')
+      stopAutoScroll('已到达最后内容，自动阅读已停止')
       return
     }
   }
-  autoScrollFrame = requestAnimationFrame(runAutoScroll)
+  scheduleAutoScrollFrame()
+}
+const runAutoScroll = (timestamp: number) => {
+  if (!store.autoScrollActive) {
+    stopAutoScroll(undefined, false)
+    return
+  }
+  if (
+    document.visibilityState === 'hidden' ||
+    noPoint.value ||
+    isLoading.value ||
+    autoReadJumping
+  ) {
+    autoScrollLastTime = timestamp
+    scheduleAutoScrollFrame()
+    return
+  }
+  if (autoReadMode.value === 'page') {
+    runPageAutoRead(timestamp)
+    return
+  }
+  autoReadIndicatorOffset.value = 0
+  runScrollAutoRead(timestamp)
 }
 const startAutoScroll = () => {
   clearAutoScrollFrame()
   autoScrollLastTime = null
-  autoScrollFrame = requestAnimationFrame(runAutoScroll)
+  resetAutoReadIndicator()
+  scheduleAutoScrollFrame()
 }
 watch(autoScrollActive, active => {
   if (active) {
@@ -406,15 +543,23 @@ watch(autoScrollActive, active => {
     stopAutoScroll(undefined, false)
   }
 })
+watch(autoReadMode, () => {
+  autoScrollLastTime = null
+  resetAutoReadIndicator()
+  if (store.autoScrollActive) {
+    startAutoScroll()
+  }
+})
 const handleUserScrollIntent = () => {
   if (store.autoScrollActive) {
-    stopAutoScroll('已停止自动滚动')
+    stopAutoScroll('已停止自动阅读')
   }
 }
 const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
   if (reloadChapter) {
     //展示进度条
     store.setShowContent(false)
+    resetAutoReadIndicator()
     //强制滚回顶层
     jump(top.value, { duration: 0 })
     //从目录，按钮切换章节时保存进度 预加载时不保存
@@ -543,6 +688,12 @@ let canJump = true
 // 监听方向键
 const handleKeyPress = (event: KeyboardEvent) => {
   if (!canJump) return
+  if (
+    store.autoScrollActive &&
+    ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+  ) {
+    handleUserScrollIntent()
+  }
   const scrollElement = getScrollElement()
   switch (event.key) {
     case 'ArrowLeft':
@@ -649,6 +800,7 @@ onUnmounted(() => {
   // 兼容Safari < 14
   document.removeEventListener('visibilitychange', onVisibilityChange)
   readSettingsVisible.value = false
+  autoReadVisible.value = false
   popCataVisible.value = false
   scrollObserver?.disconnect()
   scrollObserver = null
@@ -685,6 +837,7 @@ onBeforeRouteLeave(async (to, from, next) => {
   // 弹窗时停止响应按键翻页
   stopAutoScroll(undefined)
   window.removeEventListener('keyup', handleKeyPress)
+  autoReadVisible.value = false
   await addToBookShelfConfirm()
   next()
 })
@@ -699,6 +852,14 @@ onBeforeRouteLeave(async (to, from, next) => {
 :deep(.pop-setting-mobile) {
   margin-left: 68px;
   top: 0;
+}
+
+:deep(.pop-autoread-desktop) {
+  margin-right: 12px;
+}
+
+:deep(.pop-autoread-mobile) {
+  margin-bottom: 12px;
 }
 
 :deep(.pop-cata-desktop) {
@@ -716,6 +877,14 @@ onBeforeRouteLeave(async (to, from, next) => {
 
   :deep(.no-point) {
     pointer-events: none;
+  }
+
+  .auto-read-indicator {
+    position: fixed;
+    z-index: 90;
+    height: 2px;
+    pointer-events: none;
+    border-radius: 999px;
   }
 
   .tool-bar {
@@ -780,6 +949,24 @@ onBeforeRouteLeave(async (to, from, next) => {
           font-size: 16px;
           margin: 0 auto 6px;
         }
+
+        .icon-text {
+          font-size: 12px;
+        }
+      }
+
+      .auto-read-tool {
+        width: 58px;
+        height: 48px;
+        padding-top: 8px;
+
+        .auto-read-badge {
+          margin: 0 auto 4px;
+          font-size: 11px;
+          line-height: 14px;
+          letter-spacing: 0.12em;
+          font-weight: 600;
+        }
       }
     }
   }
@@ -828,6 +1015,16 @@ onBeforeRouteLeave(async (to, from, next) => {
     border: 1px solid #d8d8d8;
     color: #262626;
   }
+
+  .auto-read-indicator {
+    background: linear-gradient(
+      90deg,
+      rgba(184, 150, 108, 0),
+      rgba(184, 150, 108, 0.55),
+      rgba(184, 150, 108, 0)
+    );
+    box-shadow: 0 0 18px rgba(184, 150, 108, 0.28);
+  }
 }
 
 .night {
@@ -854,6 +1051,16 @@ onBeforeRouteLeave(async (to, from, next) => {
 
   :deep(.popper__arrow) {
     background: #666;
+  }
+
+  .auto-read-indicator {
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0),
+      rgba(255, 255, 255, 0.32),
+      rgba(255, 255, 255, 0)
+    );
+    box-shadow: 0 0 18px rgba(255, 255, 255, 0.12);
   }
 }
 
@@ -894,6 +1101,10 @@ onBeforeRouteLeave(async (to, from, next) => {
           .iconfont {
             display: inline-block;
           }
+        }
+
+        .auto-read-tool {
+          padding-top: 10px;
         }
       }
     }
