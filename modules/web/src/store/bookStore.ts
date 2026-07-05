@@ -17,7 +17,7 @@ const default_config: webReadConfig = {
   readWidth: 800,
   infiniteLoading: false,
   customFontName: '',
-  jumpDuration: 1000,
+  jumpDuration: 100,
   autoReadMode: 'scroll',
   autoScrollSpeed: 40,
   autoScrollDirection: 'down',
