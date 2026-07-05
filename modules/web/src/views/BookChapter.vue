@@ -105,7 +105,7 @@
         <div
           v-for="data in chapterData"
           :key="data.index"
-          :chapterIndex="data.index"
+          :data-chapter-index="data.index"
           ref="chapter"
         >
           <chapter-content
@@ -161,6 +161,9 @@ const chapterIndex = computed({
   get: () => store.readingBook.chapterIndex,
   set: value => (store.readingBook.chapterIndex = value),
 })
+const autoReadMode = computed(() => {
+  return store.config.autoReadMode === 'page' ? 'page' : 'scroll'
+})
 const isSeachBook = computed({
   get: () => store.readingBook.isSeachBook,
   set: value => (store.readingBook.isSeachBook = value),
@@ -186,7 +189,7 @@ const infiniteLoading = computed(() => store.config.infiniteLoading)
 let scrollObserver: IntersectionObserver | null
 const loading = ref()
 watchEffect(() => {
-  if (!infiniteLoading.value) {
+  if (!infiniteLoading.value || autoReadMode.value === 'page') {
     scrollObserver?.disconnect()
   } else {
     scrollObserver?.observe(loading.value)
@@ -346,9 +349,157 @@ const toShelf = () => {
 }
 
 // 获取章节内容
-const chapterData = ref<{ index: number; content: string[]; title: string }[]>(
-  [],
-)
+type ChapterRenderData = {
+  index: number
+  content: string[]
+  title: string
+  errorMessage?: string
+}
+
+const PAGE_MODE_CHAPTER_BUFFER_SIZE = 2
+
+const chapterData = ref<ChapterRenderData[]>([])
+const chapter = ref<HTMLElement[] | HTMLElement>()
+const chapterCache = new Map<number, ChapterRenderData>()
+const chapterRequests = new Map<number, Promise<ChapterRenderData>>()
+const pageModeWindowStartIndex = ref<number | null>(null)
+let pageModeBufferRequestToken = 0
+let pageModeBufferPendingStartIndex: number | null = null
+
+const getPageModeBufferedIndexes = (startIndex: number) => {
+  return Array.from({ length: PAGE_MODE_CHAPTER_BUFFER_SIZE }, (_, offset) => {
+    return startIndex + offset
+  }).filter(index => typeof catalog.value[index] !== 'undefined')
+}
+const buildChapterRenderData = (
+  index: number,
+  title: string,
+  content: string[],
+  errorMessage?: string,
+): ChapterRenderData => {
+  return {
+    index,
+    title,
+    content,
+    errorMessage,
+  }
+}
+const fetchChapterRenderData = (index: number) => {
+  const cachedChapter = chapterCache.get(index)
+  if (cachedChapter) {
+    return Promise.resolve(cachedChapter)
+  }
+  const pendingRequest = chapterRequests.get(index)
+  if (pendingRequest) {
+    return pendingRequest
+  }
+  const chapterMeta = catalog.value[index]
+  if (typeof chapterMeta === 'undefined') {
+    return Promise.resolve(
+      buildChapterRenderData(index, '', ['章节不存在'], '章节不存在'),
+    )
+  }
+  const request = API.getBookContent(
+    store.readingBook.bookUrl,
+    chapterMeta.index,
+  )
+    .then(res => {
+      if (res.data.isSuccess) {
+        const chapterRenderData = buildChapterRenderData(
+            index,
+            chapterMeta.title,
+            res.data.data.split(/\n+/),
+          )
+        chapterCache.set(index, chapterRenderData)
+        return chapterRenderData
+      }
+      return buildChapterRenderData(
+        index,
+        chapterMeta.title,
+        [res.data.errorMsg],
+        res.data.errorMsg,
+      )
+    })
+    .catch(() => {
+      return buildChapterRenderData(
+        index,
+        chapterMeta.title,
+        ['获取章节内容失败！'],
+        '获取章节内容失败！',
+      )
+    })
+    .finally(() => {
+      chapterRequests.delete(index)
+    })
+  chapterRequests.set(index, request)
+  return request
+}
+const buildPageModeChapterWindow = (startIndex: number) => {
+  return getPageModeBufferedIndexes(startIndex)
+    .map(index => chapterCache.get(index))
+    .filter((data): data is ChapterRenderData => typeof data !== 'undefined')
+}
+const getRenderedChapterHeight = (targetIndex: number) => {
+  const chapterElements = Array.isArray(chapter.value)
+    ? chapter.value
+    : chapter.value
+      ? [chapter.value]
+      : []
+  const currentChapterElement = chapterElements.find(element => {
+    return Number(element.dataset.chapterIndex) === targetIndex
+  })
+  return currentChapterElement?.offsetHeight ?? 0
+}
+const applyPageModeChapterWindow = (
+  startIndex: number,
+  preserveViewport = false,
+) => {
+  const nextWindow = buildPageModeChapterWindow(startIndex)
+  if (nextWindow.length === 0) return
+  const currentWindowIndexes = chapterData.value.map(data => data.index)
+  const nextWindowIndexes = nextWindow.map(data => data.index)
+  const isSameWindow =
+    currentWindowIndexes.length === nextWindowIndexes.length &&
+    currentWindowIndexes.every((index, currentIndex) => {
+      return index === nextWindowIndexes[currentIndex]
+    })
+  pageModeWindowStartIndex.value = startIndex
+  if (isSameWindow) return
+  const scrollTopBeforeUpdate = getScrollElement().scrollTop
+  const removedHeight = preserveViewport
+    ? chapterData.value
+        .filter(data => data.index < startIndex)
+        .reduce((height, data) => {
+          return height + getRenderedChapterHeight(data.index)
+        }, 0)
+    : 0
+  chapterData.value = nextWindow
+  nextTick(() => {
+    if (preserveViewport && removedHeight > 0) {
+      window.scrollTo(0, Math.max(0, scrollTopBeforeUpdate - removedHeight))
+    }
+    syncLastScrollTop()
+  })
+}
+const preloadPageModeChapterWindow = (
+  startIndex: number,
+  preserveViewport = false,
+) => {
+  if (autoReadMode.value !== 'page') return
+  if (pageModeBufferPendingStartIndex === startIndex) return
+  pageModeBufferPendingStartIndex = startIndex
+  const currentToken = ++pageModeBufferRequestToken
+  void Promise.all(
+    getPageModeBufferedIndexes(startIndex).map(fetchChapterRenderData),
+  ).then(() => {
+    if (pageModeBufferPendingStartIndex === startIndex) {
+      pageModeBufferPendingStartIndex = null
+    }
+    if (currentToken !== pageModeBufferRequestToken) return
+    if (autoReadMode.value !== 'page') return
+    applyPageModeChapterWindow(startIndex, preserveViewport)
+  })
+}
 const noPoint = ref(true)
 let autoScrollFrame = 0
 let autoScrollLastTime: number | null = null
@@ -357,9 +508,6 @@ let manualChapterAutoAdvancing = false
 let manualChapterAdvanceArmed = false
 let lastScrollTop = 0
 const autoReadIndicatorOffset = ref(0)
-const autoReadMode = computed(() => {
-  return store.config.autoReadMode === 'page' ? 'page' : 'scroll'
-})
 const showAutoReadIndicator = computed(() => {
   return (
     store.autoScrollActive &&
@@ -557,6 +705,16 @@ watch(autoScrollActive, active => {
 watch(autoReadMode, () => {
   autoScrollLastTime = null
   resetAutoReadIndicator()
+  pageModeBufferPendingStartIndex = null
+  pageModeBufferRequestToken += 1
+  if (autoReadMode.value === 'page' && chapterData.value.length > 0) {
+    const currentWindowStartIndex =
+      pageModeWindowStartIndex.value ?? chapterData.value[0]?.index ?? null
+    const preserveViewport =
+      currentWindowStartIndex !== null &&
+      chapterIndex.value > currentWindowStartIndex
+    preloadPageModeChapterWindow(chapterIndex.value, preserveViewport)
+  }
   if (store.autoScrollActive) {
     startAutoScroll()
   }
@@ -628,12 +786,42 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
     store.setShowContent(false)
     resetAutoReadIndicator()
     resetManualChapterAdvanceState()
+    pageModeBufferPendingStartIndex = null
+    pageModeBufferRequestToken += 1
     //强制滚回顶层
     jump(top.value, { duration: 0 })
     //从目录，按钮切换章节时保存进度 预加载时不保存
     saveReadingBookProgressToBrowser(index, chapterPos)
     chapterData.value = []
   }
+  if (reloadChapter && autoReadMode.value === 'page') {
+    const currentChapterPromise = fetchChapterRenderData(index)
+    loadingWrapper(
+      currentChapterPromise.then(currentChapterData => {
+        chapterData.value = [currentChapterData]
+        pageModeWindowStartIndex.value = index
+        if (currentChapterData.errorMessage) {
+          ElMessage({
+            message: currentChapterData.errorMessage,
+            type: 'error',
+          })
+        }
+        if (reloadChapter) toChapterPos(chapterPos)
+        store.setContentLoading(true)
+        noPoint.value = false
+        store.setShowContent(true)
+        resetManualChapterAdvanceState()
+        nextTick(syncLastScrollTop)
+      }),
+    )
+    currentChapterPromise.then(currentChapterData => {
+      if (!currentChapterData.errorMessage) {
+        preloadPageModeChapterWindow(index)
+      }
+    })
+    return
+  }
+
   const bookUrl = store.readingBook.bookUrl
   const { title, index: chapterIndex } = catalog.value[index]
 
@@ -672,7 +860,6 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
 }
 
 // 章节进度跳转和计算
-const chapter = ref()
 const chapterRef = ref()
 const toChapterPos = (pos: number) => {
   nextTick(() => {
@@ -690,6 +877,19 @@ const saveBookProgressThrottle = useThrottleFn(
 const onReadedLengthChange = (index: number, pos: number) => {
   saveReadingBookProgressToBrowser(index, pos)
   saveBookProgressThrottle()
+  if (autoReadMode.value !== 'page') return
+  const currentWindowIndexes = chapterData.value.map(data => data.index)
+  const nextBufferedIndexes = getPageModeBufferedIndexes(index)
+  const currentWindowStartIndex =
+    pageModeWindowStartIndex.value ?? chapterData.value[0]?.index ?? null
+  const needsViewportCompensation =
+    currentWindowStartIndex !== null && index > currentWindowStartIndex
+  const hasFullBufferedWindow = nextBufferedIndexes.every(bufferedIndex => {
+    return currentWindowIndexes.includes(bufferedIndex)
+  })
+  if (!hasFullBufferedWindow || needsViewportCompensation) {
+    preloadPageModeChapterWindow(index, needsViewportCompensation)
+  }
 }
 
 // 文档标题
