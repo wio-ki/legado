@@ -28,6 +28,7 @@ import io.legado.app.databinding.DialogChapterChangeSourceBinding
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
+import io.legado.app.lib.theme.applyUiSearchTypeface
 import io.legado.app.lib.theme.elevation
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.book.read.ReadBookActivity
@@ -35,7 +36,7 @@ import io.legado.app.ui.book.source.edit.BookSourceEditActivity
 import io.legado.app.ui.book.source.manage.BookSourceActivity
 import io.legado.app.ui.widget.recycler.VerticalDivider
 import io.legado.app.utils.StartActivityContract
-import io.legado.app.utils.applyTint
+import io.legado.app.utils.applyUiMenuStyle
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.gone
 import io.legado.app.utils.observeEvent
@@ -141,7 +142,7 @@ class ChangeChapterSourceDialog() : BaseDialogFragment(R.layout.dialog_chapter_c
 
     private fun initMenu() {
         binding.toolBar.inflateMenu(R.menu.change_source)
-        binding.toolBar.menu.applyTint(requireContext())
+        binding.toolBar.menu.applyUiMenuStyle(requireContext())
         binding.toolBar.setOnMenuItemClickListener(this)
         binding.toolBar.menu.findItem(R.id.menu_check_author)
             ?.isChecked = AppConfig.changeSourceCheckAuthor
@@ -181,6 +182,7 @@ class ChangeChapterSourceDialog() : BaseDialogFragment(R.layout.dialog_chapter_c
 
     private fun initSearchView() {
         val searchView = binding.toolBar.menu.findItem(R.id.menu_screen).actionView as SearchView
+        searchView.applyUiSearchTypeface(requireContext())
         searchView.setOnCloseListener {
             showTitle()
             false
@@ -229,7 +231,7 @@ class ChangeChapterSourceDialog() : BaseDialogFragment(R.layout.dialog_chapter_c
                     item.setTitle(R.string.refresh)
                 }
             }
-            binding.toolBar.menu.applyTint(requireContext())
+            binding.toolBar.menu.applyUiMenuStyle(requireContext())
         }
         lifecycleScope.launch {
             lifecycle.currentStateFlow.first { it.isAtLeast(STARTED) }

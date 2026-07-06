@@ -28,6 +28,7 @@ import io.legado.app.databinding.DialogBookChangeSourceBinding
 import io.legado.app.help.book.isWebFile
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
+import io.legado.app.lib.theme.applyUiSearchTypeface
 import io.legado.app.lib.theme.elevation
 import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.lib.theme.primaryColor
@@ -38,7 +39,7 @@ import io.legado.app.ui.widget.dialog.WaitDialog
 import io.legado.app.ui.widget.recycler.VerticalDivider
 import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.StartActivityContract
-import io.legado.app.utils.applyTint
+import io.legado.app.utils.applyUiMenuStyle
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.getCompatDrawable
 import io.legado.app.utils.observeEvent
@@ -130,7 +131,7 @@ class ChangeBookSourceDialog() : BaseDialogFragment(R.layout.dialog_book_change_
 
     private fun initMenu() {
         binding.toolBar.inflateMenu(R.menu.change_source)
-        binding.toolBar.menu.applyTint(requireContext())
+        binding.toolBar.menu.applyUiMenuStyle(requireContext())
         binding.toolBar.setOnMenuItemClickListener(this)
         binding.toolBar.menu.findItem(R.id.menu_check_author)
             ?.isChecked = AppConfig.changeSourceCheckAuthor
@@ -162,6 +163,7 @@ class ChangeBookSourceDialog() : BaseDialogFragment(R.layout.dialog_book_change_
 
     private fun initSearchView() {
         val searchView = binding.toolBar.menu.findItem(R.id.menu_screen).actionView as SearchView
+        searchView.applyUiSearchTypeface(requireContext())
         searchView.setOnCloseListener {
             showTitle()
             false
@@ -230,7 +232,7 @@ class ChangeBookSourceDialog() : BaseDialogFragment(R.layout.dialog_book_change_
                     item.setTitle(R.string.refresh)
                 }
             }
-            binding.toolBar.menu.applyTint(requireContext())
+            binding.toolBar.menu.applyUiMenuStyle(requireContext())
         }
         lifecycleScope.launch {
             lifecycle.currentStateFlow.first { it.isAtLeast(STARTED) }

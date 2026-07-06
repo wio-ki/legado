@@ -149,6 +149,23 @@
             </div>
           </div>
         </li>
+        <li class="infinite-loading">
+          <i>无限加载</i>
+          <span
+            class="infinite-loading-item"
+            :key="0"
+            :class="{ selected: infiniteLoading == false }"
+            @click="setInfiniteLoading(false)"
+            >关闭</span
+          >
+          <span
+            class="infinite-loading-item"
+            :key="1"
+            :class="{ selected: infiniteLoading == true }"
+            @click="setInfiniteLoading(true)"
+            >开启</span
+          >
+        </li>
       </ul>
     </div>
   </div>
@@ -328,6 +345,14 @@ const moreJumpDuration = () => {
 const lessJumpDuration = () => {
   if (store.config.jumpDuration === 0) return
   store.config.jumpDuration -= 100
+}
+
+//无限加载
+const infiniteLoading = computed(() => {
+  return store.config.infiniteLoading
+})
+const setInfiniteLoading = (loading: boolean) => {
+  store.config.infiniteLoading = loading
 }
 </script>
 

@@ -4,6 +4,7 @@ plugins {
 //    id 'kotlin-parcelize'
 //    //id 'kotlin-kapt'
 //    id 'com.google.devtools.ksp'
+
     alias libs.plugins.android.application
     alias libs.plugins.kotlin.android
     alias libs.plugins.kotlin.parcelize
@@ -16,9 +17,16 @@ static def releaseTime() {
     return new Date().format("yy.MMddHH", TimeZone.getTimeZone("GMT+8"))
 }
 
-def name = "legado"
-def version = "3." + releaseTime()
-def gitCommits = Integer.parseInt('git rev-list HEAD --count'.execute().text.trim())
+def name = "legado_rr"
+def version = project.hasProperty("VERSION_NAME")
+        ? project.property("VERSION_NAME").toString()
+        : "3." + releaseTime()
+def gitCommits = providers.exec {
+    commandLine 'git', 'rev-list', 'HEAD', '--count'
+}.standardOutput.asText.map { it.trim().toInteger() }
+def buildVersionCode = project.hasProperty("VERSION_CODE")
+        ? project.property("VERSION_CODE").toString().toInteger()
+        : 10000 + gitCommits.get()
 
 android {
     compileSdk = compile_sdk_version
@@ -44,18 +52,22 @@ android {
         }
     }
     defaultConfig {
-        applicationId "com.legado.app"
-        // httpengine-native-provider requires minSdkVersion >= 23
-        // (it declares minSdkVersion=23 in its own AndroidManifest.xml).
-        minSdk 23
+        applicationId "io.legado.app.rr"
+        minSdk 21
         targetSdk 36
-        versionCode 30000 + gitCommits
+        versionCode buildVersionCode
         versionName version
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         project.ext.set("archivesBaseName", name + "_" + version)
 
         buildConfigField "String", "Cronet_Version", "\"$CronetVersion\""
         buildConfigField "String", "Cronet_Main_Version", "\"$CronetMainVersion\""
+
+        if (project.hasProperty("abi")) {
+            ndk {
+                abiFilters project.property("abi").toString()
+            }
+        }
 
         javaCompileOptions {
             annotationProcessorOptions {
@@ -76,15 +88,24 @@ android {
             if (project.hasProperty("RELEASE_STORE_FILE")) {
                 signingConfig signingConfigs.myConfig
             }
-            applicationIdSuffix '.release'
-            if (getApplicationIdSuffix() == '.releaseA') {
-                manifestPlaceholders.put("app_name", "@string/app_name_a")
-            } else {
-                manifestPlaceholders.put("app_name", "@string/app_name")
-            }
+            manifestPlaceholders.put("app_name", "@string/app_name")
 
-            minifyEnabled true
-            shrinkResources = true
+            minifyEnabled false
+            shrinkResources = false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'cronet-proguard-rules.pro'
+        }
+        beta {
+            if (project.hasProperty("RELEASE_STORE_FILE")) {
+                signingConfig signingConfigs.myConfig
+            }
+            applicationIdSuffix '.beta'
+            versionNameSuffix '.beta'
+            manifestPlaceholders.put("app_name", "@string/app_name")
+
+            matchingFallbacks = ['release']
+
+            minifyEnabled false
+            shrinkResources = false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'cronet-proguard-rules.pro'
         }
         debug {
@@ -94,7 +115,7 @@ android {
             manifestPlaceholders.put("app_name", "@string/app_name")
 
             applicationIdSuffix '.debug'
-            versionNameSuffix 'debug'
+            versionNameSuffix '.debug'
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'cronet-proguard-rules.pro'
         }
@@ -110,10 +131,21 @@ android {
 
     android.applicationVariants.configureEach { variant ->
         variant.outputs.configureEach {
-            def flavor = variant.productFlavors[0].name
-            outputFileName = "${name}_${flavor}_${defaultConfig.versionName}.apk"
+            outputFileName = "${name}_${variant.name}_${variant.versionName}_${defaultConfig.versionCode}.apk"
         }
     }
+
+//    android.applicationVariants.configureEach { variant ->
+//        def variantName = variant.name.capitalize()
+//        def copyTask = tasks.register("copy${variantName}ApkToCurrentDir", Exec) {
+//            workingDir rootProject.projectDir
+//            commandLine "sh", "-c",
+//                    "cp -f app/build/outputs/apk/${variant.flavorName}/${variant.buildType.name}/*.apk '${rootProject.projectDir.parentFile.absolutePath}/'"
+//        }
+//        tasks.named("assemble${variantName}").configure {
+//            finalizedBy(copyTask)
+//        }
+//    }
 
 
     room {
@@ -143,16 +175,19 @@ android {
         // Adds exported schema location as test app assets.
         androidTest.assets.srcDirs += files("$projectDir/schemas".toString())
     }
-    lint {
-        checkDependencies = true
-    }
     tasks.withType(JavaCompile).tap {
         configureEach {
             //options.compilerArgs << "-Xlint:unchecked"
         }
     }
     lint { //忽略string翻译缺失，后面需要翻译时去掉，todo
+        checkDependencies = false
         disable 'MissingTranslation'
+    }
+    if (providers.gradleProperty("skipVitalLint").map { it.toBoolean() }.getOrElse(false)) {
+        tasks.matching { it.name.startsWith("lintVital") }.configureEach {
+            enabled = false
+        }
     }
 }
 
@@ -186,6 +221,7 @@ dependencies {
     implementation(libs.fragment.ktx)
     implementation(libs.preference.ktx)
     implementation(libs.androidx.constraintlayout)
+    implementation(libs.liquidglass)
     implementation(libs.androidx.swiperefreshlayout)
     implementation(libs.androidx.recyclerview)
     implementation(libs.androidx.viewpager2)
@@ -196,6 +232,7 @@ dependencies {
     implementation(libs.material)
     implementation(libs.flexbox)
     implementation(libs.gson)
+    implementation(libs.lottie)
 
     //lifecycle
     implementation(libs.lifecycle.common.java8)
@@ -245,17 +282,6 @@ dependencies {
     //网络
     implementation(libs.okhttp)
     implementation(fileTree(dir: 'cronetlib', include: ['*.jar', '*.aar']))
-
-    // HttpEngine provider (fixes R8 missing class: org.chromium.net.impl.HttpEngineNativeProvider)
-    def httpEngineNativeProviderVersion = project.findProperty("HttpEngineNativeProviderVersion") as String
-    if (httpEngineNativeProviderVersion) {
-        implementation("org.chromium.net:httpengine-native-provider:$httpEngineNativeProviderVersion") {
-            // Avoid pulling duplicate Cronet jars; this project bundles Cronet jars under app/cronetlib/
-            exclude group: "org.chromium.net", module: "cronet-common"
-            exclude group: "org.chromium.net", module: "cronet-shared"
-        }
-    }
-
     implementation(libs.protobuf.javalite)
 
     //Glide
@@ -289,7 +315,10 @@ dependencies {
     implementation(libs.markwon.core)
     implementation(libs.markwon.image.glide)
     implementation(libs.markwon.ext.tables)
+    implementation(libs.markwon.ext.strikethrough)
+    implementation(libs.markwon.ext.tasklist)
     implementation(libs.markwon.html)
+    implementation(libs.markwon.linkify)
 
     //转换繁体
     implementation(libs.quick.chinese.transfer.core)
@@ -297,7 +326,6 @@ dependencies {
     //加解密类库,有些书源使用
     //noinspection GradleDependency,GradlePackageUpdate
     implementation(libs.hutool.crypto)
-
     implementation libs.glide.recyclerview
 
     //LeakCanary, 内存泄露检测

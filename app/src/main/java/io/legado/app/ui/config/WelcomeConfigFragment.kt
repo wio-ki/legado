@@ -25,6 +25,7 @@ import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.externalFiles
 import io.legado.app.utils.getPrefString
 import io.legado.app.utils.inputStream
+import io.legado.app.utils.putPrefBoolean
 import io.legado.app.utils.putPrefString
 import io.legado.app.utils.readUri
 import io.legado.app.utils.removePref
@@ -198,6 +199,7 @@ class WelcomeConfigFragment : PreferenceFragment(),
     }
 
     private fun setCoverFromUri(preferenceKey: String, uri: Uri) {
+        putPrefBoolean(PreferKey.customWelcome, true)
         if (uri.scheme?.lowercase() in listOf("http", "https")) {
             lifecycleScope.launch {
                 kotlin.runCatching {

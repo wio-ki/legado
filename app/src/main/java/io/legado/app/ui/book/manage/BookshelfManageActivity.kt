@@ -7,7 +7,6 @@ import android.view.MenuItem
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import androidx.activity.viewModels
-import androidx.appcompat.widget.PopupMenu
 import androidx.appcompat.widget.SearchView
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.ItemTouchHelper
@@ -62,7 +61,7 @@ import kotlin.math.max
  */
 class BookshelfManageActivity :
     VMBaseActivity<ActivityArrangeBookBinding, BookshelfManageViewModel>(),
-    PopupMenu.OnMenuItemClickListener,
+    MenuItem.OnMenuItemClickListener,
     SelectActionBar.CallBack,
     BookAdapter.CallBack,
     SourcePickerDialog.Callback,
@@ -297,8 +296,8 @@ class BookshelfManageActivity :
         return super.onCompatOptionsItemSelected(item)
     }
 
-    override fun onMenuItemClick(item: MenuItem?): Boolean {
-        when (item?.itemId) {
+    override fun onMenuItemClick(item: MenuItem): Boolean {
+        when (item.itemId) {
             R.id.menu_del_selection -> alertDelSelection()
             R.id.menu_update_enable ->
                 viewModel.upCanUpdate(adapter.selection, true)

@@ -3,6 +3,7 @@ package io.legado.app.help.webView
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.MutableContextWrapper
+import android.graphics.Color
 import android.os.Build
 import android.view.ViewGroup
 import android.webkit.WebSettings
@@ -42,23 +43,23 @@ object WebViewPool {
     @Synchronized
     fun acquire(context: Context): PooledWebView {
         val pooledWebView = if (idlePool.isNotEmpty()) {
-            idlePool.pop().upContext(context).apply { // 复用闲置实例
-                realWebView.settings.setDarkeningAllowed(AppConfig.isNightTheme) //重新设置一次是否夜间
-            }
+            idlePool.pop() // 复用闲置实例
         } else {
             if (needInitialize) {
                 needInitialize = false
                 startCleanupTimer()
             }
-            createNewWebView(context) // 创建新实例
+            createNewWebView() // 创建新实例
         }
-        if (inUsePool.isEmpty()) {
-            pooledWebView.realWebView.resumeTimers()
+        pooledWebView.upContext(context).apply {
+            realWebView.settings.setDarkeningAllowed(AppConfig.isNightTheme) //设置是否夜间
+            if (inUsePool.isEmpty()) {
+                realWebView.resumeTimers()
+            }
+            isInUse = true
         }
-        pooledWebView.let {
-            it.isInUse = true
-            inUsePool[it.id] = it
-        }
+        inUsePool[pooledWebView.id] = pooledWebView
+        pooledWebView.realWebView.setBackgroundColor(Color.TRANSPARENT)
         return pooledWebView
     }
 
@@ -78,6 +79,7 @@ object WebViewPool {
             )
             stopLoading()
             clearFocus() //清除焦点
+            setOnTouchListener(null)
             setOnLongClickListener(null)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 setOnScrollChangeListener(null)
@@ -86,6 +88,10 @@ object WebViewPool {
             outlineProvider = null
             clipToOutline = false
             webChromeClient = null
+            removeJavascriptInterface(WebJsExtensions.nameBasic)
+            removeJavascriptInterface(WebJsExtensions.nameJava)
+            removeJavascriptInterface(WebJsExtensions.nameSource)
+            removeJavascriptInterface(WebJsExtensions.nameCache)
             clearFormData() //清除表单数据
             clearMatches() //清除查找匹配项
             clearDisappearingChildren() //清除消失中的子视图
@@ -124,8 +130,8 @@ object WebViewPool {
         }
     }
 
-    private fun createNewWebView(context: Context = appCtx): PooledWebView {
-        val webView = VisibleWebView(MutableContextWrapper(context))
+    private fun createNewWebView(): PooledWebView {
+        val webView = VisibleWebView(MutableContextWrapper(appCtx))
         preInitWebView(webView)
         return PooledWebView(webView, generateId())
     }
@@ -149,9 +155,9 @@ object WebViewPool {
             allowContentAccess = true
             builtInZoomControls = true
             displayZoomControls = false
-            setDarkeningAllowed(AppConfig.isNightTheme)
             textZoom = 100
         }
+        webView.setBackgroundColor(Color.TRANSPARENT)
     }
 
     // 定时清理闲置过久的WebView

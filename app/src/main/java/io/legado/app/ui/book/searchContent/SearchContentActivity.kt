@@ -21,12 +21,9 @@ import io.legado.app.databinding.ActivitySearchContentBinding
 import io.legado.app.help.IntentData
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.isLocal
-import io.legado.app.lib.theme.bottomBackground
-import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.lib.theme.primaryTextColor
 import io.legado.app.ui.widget.recycler.UpLinearLayoutManager
 import io.legado.app.ui.widget.recycler.VerticalDivider
-import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.applyNavigationBarMargin
 import io.legado.app.utils.applyTint
 import io.legado.app.utils.invisible
@@ -58,13 +55,11 @@ class SearchContentActivity :
     private var initJob: Job? = null
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
-        val bbg = bottomBackground
-        val btc = getPrimaryTextColor(ColorUtils.isColorLight(bbg))
-        binding.llSearchBaseInfo.setBackgroundColor(bbg)
+        binding.llSearchBaseInfo.setBackgroundResource(R.drawable.bg_search_glass_panel)
         binding.llSearchBaseInfo.applyNavigationBarMargin()
-        binding.tvCurrentSearchInfo.setTextColor(btc)
-        binding.ivSearchContentTop.setColorFilter(btc)
-        binding.ivSearchContentBottom.setColorFilter(btc)
+        binding.tvCurrentSearchInfo.setTextColor(primaryTextColor)
+        binding.ivSearchContentTop.setColorFilter(primaryTextColor)
+        binding.ivSearchContentBottom.setColorFilter(primaryTextColor)
         val searchResultList = IntentData.get<List<SearchResult>>("searchResultList")
         val position = intent.getIntExtra("searchResultIndex", 0)
         val noSearchResult = searchResultList == null
@@ -183,7 +178,7 @@ class SearchContentActivity :
         observeEvent<Pair<Book, BookChapter>>(EventBus.SAVE_CONTENT) { (book, chapter) ->
             viewModel.book?.bookUrl?.let { bookUrl ->
                 if (book.bookUrl == bookUrl) {
-                    viewModel.cacheChapterNames.add(chapter.getFileName())
+                    viewModel.cacheChapterNames.addAll(BookHelp.getChapterCacheFileNames(book, chapter))
                     adapter.notifyItemChanged(chapter.index, true)
                 }
             }
@@ -207,7 +202,10 @@ class SearchContentActivity :
                 appDb.bookChapterDao.getChapterList(viewModel.bookUrl).forEach { bookChapter ->
                     ensureActive()
                     val searchResults = if (isLocalBook
-                        || viewModel.cacheChapterNames.contains(bookChapter.getFileName())
+                        || BookHelp.getChapterCacheFileNames(
+                            viewModel.book ?: return@forEach,
+                            bookChapter
+                        ).any(viewModel.cacheChapterNames::contains)
                     ) {
                         viewModel.searchChapter(query, bookChapter)
                     } else {

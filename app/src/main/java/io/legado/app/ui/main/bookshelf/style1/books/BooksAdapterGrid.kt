@@ -40,7 +40,8 @@ class BooksAdapterGrid(context: Context, private val callBack: CallBack) :
                     } else {
                         tvName.gone()
                     }
-                    ivCover.load(item, false)
+                    ivCover.loadThumb(item, false)
+                    ivLocal.visible(AppConfig.showLocalBookIcon && item.isLocal)
                     upRefresh(binding, item)
                 } else {
                     for (i in payloads.indices) {
@@ -48,12 +49,13 @@ class BooksAdapterGrid(context: Context, private val callBack: CallBack) :
                         bundle.keySet().forEach {
                             when (it) {
                                 "name" -> tvName.text = item.name
-                                "cover" -> ivCover.load(
+                                "cover" -> ivCover.loadThumb(
                                     item,
                                     false
                                 )
 
                                 "refresh" -> upRefresh(binding, item)
+                                "local" -> ivLocal.visible(AppConfig.showLocalBookIcon && item.isLocal)
                             }
                         }
                     }
@@ -62,7 +64,8 @@ class BooksAdapterGrid(context: Context, private val callBack: CallBack) :
             is ItemBookshelfGrid2Binding -> binding.run {
                 if (payloads.isEmpty()) {
                     tvName.text = item.name
-                    ivCover.load(item, false)
+                    ivCover.loadThumb(item, false)
+                    ivLocal.visible(AppConfig.showLocalBookIcon && item.isLocal)
                     upRefresh(binding, item)
                 } else {
                     for (i in payloads.indices) {
@@ -70,12 +73,13 @@ class BooksAdapterGrid(context: Context, private val callBack: CallBack) :
                         bundle.keySet().forEach {
                             when (it) {
                                 "name" -> tvName.text = item.name
-                                "cover" -> ivCover.load(
+                                "cover" -> ivCover.loadThumb(
                                     item,
                                     false
                                 )
 
                                 "refresh" -> upRefresh(binding, item)
+                                "local" -> ivLocal.visible(AppConfig.showLocalBookIcon && item.isLocal)
                             }
                         }
                     }

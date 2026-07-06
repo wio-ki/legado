@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import io.legado.app.R
+import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.IntentAction
@@ -11,8 +12,13 @@ import io.legado.app.constant.Status
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookProgress
+import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.ReadRecentBook
 import io.legado.app.data.entities.ReadRecord
+import io.legado.app.help.AppWebDav
+import io.legado.app.help.ReadRecordDailyHelper
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.getBookSource
 import io.legado.app.help.book.readSimulating
@@ -20,10 +26,14 @@ import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.globalExecutor
+import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.getMediaRequest
 import io.legado.app.service.AudioPlayService
 import io.legado.app.model.SourceCallBack
+import io.legado.app.ui.about.ReadRecordWidgetStore
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.startService
 import io.legado.app.utils.toastOnUi
@@ -105,8 +115,9 @@ object AudioPlay : CoroutineScope by MainScope() {
     fun resetData(book: Book) {
         stop()
         AudioPlay.book = book
+        readRecord.deviceId = AppConst.androidId
         readRecord.bookName = book.name
-        readRecord.readTime = appDb.readRecordDao.getReadTime(book.name) ?: 0
+        readRecord.readTime = appDb.readRecordDao.getReadTime(AppConst.androidId, book.name) ?: 0
         chapterSize = appDb.bookChapterDao.getChapterCount(book.bookUrl)
         simulatedChapterSize = if (book.readSimulating()) {
             book.simulatedTotalChapterNum()
@@ -136,10 +147,13 @@ object AudioPlay : CoroutineScope by MainScope() {
             return
         }
         executor.execute {
-            readRecord.readTime = readRecord.readTime + System.currentTimeMillis() - readStartTime
-            readStartTime = System.currentTimeMillis()
-            readRecord.lastRead = System.currentTimeMillis()
+            val now = System.currentTimeMillis()
+            val delta = now - readStartTime
+            readRecord.readTime += delta
+            readStartTime = now
+            readRecord.lastRead = now
             appDb.readRecordDao.insert(readRecord)
+            ReadRecordDailyHelper.record(delta, now)
         }
     }
 
@@ -173,7 +187,7 @@ object AudioPlay : CoroutineScope by MainScope() {
         if (addLoading(index)) {
             val book = book
             val bookSource = bookSource
-            if (book != null && bookSource != null) {
+            if (book != null) {
                 upDurChapter()
                 val chapter = durChapter
                 if (chapter == null) {
@@ -185,12 +199,28 @@ object AudioPlay : CoroutineScope by MainScope() {
                     removeLoading(index)
                     return
                 }
+                chapter.resourceUrl
+                    ?.takeIf { ExoPlayerHelper.isMediaCached(it, book) }
+                    ?.let { cachedUrl ->
+                        durPlayUrl = cachedUrl
+                        durLyric = chapter.getVariable("lyric")
+                        upLoading(false)
+                        upPlayUrl()
+                        removeLoading(index)
+                        return
+                    }
+                if (bookSource == null) {
+                    upLoading(false)
+                    appCtx.toastOnUi(R.string.book_source_not_found)
+                    removeLoading(index)
+                    return
+                }
                 upLoading(true)
                 WebBook.getContent(this, bookSource, book, chapter)
                     .onSuccess { content ->
                         val content = content.trim()
                         if (content.isEmpty()) {
-                            appCtx.toastOnUi("未获取到资源链接")
+                            appCtx.toastOnUi(R.string.cache_manage_audio_url_empty)
                         } else {
                             contentLoadFinish(chapter, content)
                         }
@@ -205,7 +235,7 @@ object AudioPlay : CoroutineScope by MainScope() {
                     }
             } else {
                 removeLoading(index)
-                appCtx.toastOnUi("book or source is null")
+                appCtx.toastOnUi(R.string.book_source_not_found)
             }
         }
     }
@@ -215,6 +245,18 @@ object AudioPlay : CoroutineScope by MainScope() {
      */
     private fun contentLoadFinish(chapter: BookChapter, content: String) {
         if (chapter.index == book?.durChapterIndex) {
+            kotlin.runCatching {
+                val request = AnalyzeUrl(
+                    content,
+                    source = bookSource,
+                    ruleData = book,
+                    chapter = chapter
+                ).getMediaRequest()
+                if (chapter.resourceUrl != request.url) {
+                    chapter.resourceUrl = request.url
+                    chapter.update()
+                }
+            }
             durPlayUrl = content
             durLyric = chapter.getVariable("lyric")
             upPlayUrl()
@@ -305,6 +347,74 @@ object AudioPlay : CoroutineScope by MainScope() {
             context.startService<AudioPlayService> {
                 action = IntentAction.adjustProgress
                 putExtra("position", position)
+            }
+        }
+    }
+
+    fun setProgress(progress: BookProgress) {
+        if (progress.durChapterIndex !in 0..<simulatedChapterSize) {
+            return
+        }
+        val chapterChanged = durChapterIndex != progress.durChapterIndex
+        if (chapterChanged) {
+            stopPlay()
+            durChapterIndex = progress.durChapterIndex
+            durPlayUrl = ""
+            durLyric = null
+            durAudioSize = 0
+        }
+        durChapterPos = progress.durChapterPos
+        saveRead(first = chapterChanged)
+        upDurChapter()
+        if (chapterChanged) {
+            Coroutine.async {
+                loadPlayUrl()
+            }
+        } else if (AudioPlayService.isRun) {
+            context.startService<AudioPlayService> {
+                action = IntentAction.adjustProgress
+                putExtra("position", durChapterPos)
+            }
+        }
+    }
+
+    fun uploadProgress(successAction: (() -> Unit)? = null) {
+        book?.let {
+            Coroutine.async {
+                AppWebDav.uploadBookProgress(it) {
+                    successAction?.invoke()
+                }
+                it.update()
+            }
+        }
+    }
+
+    fun syncProgress(
+        newProgressAction: ((progress: BookProgress) -> Unit)? = null,
+        uploadSuccessAction: (() -> Unit)? = null,
+        syncSuccessAction: (() -> Unit)? = null,
+    ) {
+        if (!AppConfig.syncBookProgress) return
+        val book = book ?: return
+        Coroutine.async {
+            AppWebDav.getBookProgress(book)
+        }.onError {
+            AppLog.put("拉取听书进度失败", it)
+        }.onSuccess { progress ->
+            when (progress?.compareWith(book)) {
+                null,
+                BookProgressComparison.LOCAL_NEWER -> {
+                    Coroutine.async {
+                        AppWebDav.uploadBookProgress(BookProgress(book), uploadSuccessAction)
+                        book.update()
+                    }
+                }
+                BookProgressComparison.REMOTE_NEWER -> {
+                    newProgressAction?.invoke(progress)
+                }
+                BookProgressComparison.SAME -> {
+                    syncSuccessAction?.invoke()
+                }
             }
         }
     }
@@ -426,6 +536,8 @@ object AudioPlay : CoroutineScope by MainScope() {
                 }
             }
             book.update()
+            appDb.readRecentBookDao.insert(ReadRecentBook(book.bookUrl, durTime))
+            ReadRecordWidgetStore.updateRecentSnapshot(book, durTime)
         }
     }
 

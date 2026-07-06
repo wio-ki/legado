@@ -6,6 +6,7 @@ import io.legado.app.base.BaseViewModel
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.RssSource
 import io.legado.app.help.source.SourceHelp
+import io.legado.app.help.source.removeSortCache
 import io.legado.app.utils.toastOnUi
 
 class RssViewModel(application: Application) : BaseViewModel(application) {
@@ -45,7 +46,27 @@ class RssViewModel(application: Application) : BaseViewModel(application) {
         }
     }
 
-    fun getSingleUrl(rssSource: RssSource, onSuccess: (url: String) -> Unit) {
+    fun clearArticles(sourceUrl: String, onFinally: () -> Unit) {
+        execute {
+            appDb.rssArticleDao.delete(sourceUrl)
+        }.onFinally {
+            onFinally.invoke()
+        }
+    }
+
+    fun clearSortCache(rssSource: RssSource, onFinally: () -> Unit) {
+        execute {
+            rssSource.removeSortCache()
+        }.onFinally {
+            onFinally.invoke()
+        }
+    }
+
+    fun getSingleUrl(
+        rssSource: RssSource,
+        onSuccess: (url: String) -> Unit,
+        onError: ((Throwable) -> Unit)? = null
+    ) {
         execute {
             var sortUrl = rssSource.sortUrl
             if (!sortUrl.isNullOrBlank()) {
@@ -75,11 +96,16 @@ class RssViewModel(application: Application) : BaseViewModel(application) {
             .onSuccess {
                 onSuccess.invoke(it)
             }.onError {
-                context.toastOnUi(it.localizedMessage)
+                onError?.invoke(it) ?: context.toastOnUi(it.localizedMessage)
             }
     }
 
-    fun  launchRssWithHtml(rssSource: RssSource, noStartHtml: () -> Unit, isStartHtml: (html: String) -> Unit) {
+    fun launchRssWithHtml(
+        rssSource: RssSource,
+        noStartHtml: () -> Unit,
+        isStartHtml: (html: String) -> Unit,
+        onError: ((Throwable) -> Unit)? = null
+    ) {
         execute {
             val startHtml = rssSource.startHtml ?: return@execute null
             return@execute when {
@@ -101,7 +127,7 @@ class RssViewModel(application: Application) : BaseViewModel(application) {
                     isStartHtml.invoke(it)
                 }
             }.onError {
-                context.toastOnUi(it.localizedMessage)
+                onError?.invoke(it) ?: context.toastOnUi(it.localizedMessage)
             }
     }
 

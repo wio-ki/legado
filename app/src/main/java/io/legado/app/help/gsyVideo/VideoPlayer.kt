@@ -1,7 +1,10 @@
 package io.legado.app.help.gsyVideo
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -31,6 +34,8 @@ import master.flame.danmaku.ui.widget.DanmakuView
 import java.io.File
 import java.io.FileInputStream
 
+private const val PLAYBACK_LOAD_TIMEOUT_MS = 25_000L
+
 class VideoPlayer: StandardGSYVideoPlayer {
     constructor(context: Context?, fullFlag: Boolean?) : super(context, fullFlag) //必须的,全屏时依靠这个构建知道获取全屏布局
     constructor(context: Context?) : super(context)
@@ -39,10 +44,22 @@ class VideoPlayer: StandardGSYVideoPlayer {
     private var episodeList: TextView? = null
     private var playbackSpeed: TextView? = null
     private var playSpeed: Float = 1.0f
+    var onPlaySpeedChanged: ((Float) -> Unit)? = null
     private var btnNext: ImageView? = null
     private var tipView: TextView? = null
+    private val playbackLoadTimeoutHandler = Handler(Looper.getMainLooper())
+    private val playbackLoadTimeoutRunnable = Runnable {
+        if (isWaitingForPlaybackStart()) {
+            onPlaybackLoadTimeout?.invoke() ?: showPlayAddressError()
+        }
+    }
+    var onPlaybackLoadTimeout: (() -> Unit)? = null
     private var isChanging = false
     private var isLongPressSpeed = false
+    private var mChangeEpisode = false
+    private var episodeGestureOffset = 0
+    private var episodeGestureTranslation = 0f
+    private var defaultTipY: Float? = null
 
     private var mParser: BaseDanmakuParser? = null //解析器对象
     private var mDanmakuView: DanmakuView? = null //弹幕view
@@ -93,8 +110,16 @@ class VideoPlayer: StandardGSYVideoPlayer {
                 getContext().applicationContext,
                 object : GestureDetector.SimpleOnGestureListener() {
                     override fun onDoubleTap(e: MotionEvent): Boolean {
-                        touchDoubleUp(e)
-                        return super.onDoubleTap(e)
+                        val player = getCurrentPlayer()
+                        val centerSafeWidth = player.width / 5f
+                        val centerStart = (player.width - centerSafeWidth) / 2f
+                        val centerEnd = centerStart + centerSafeWidth
+                        if (e.x in centerStart..centerEnd) {
+                            return true
+                        }
+                        val offset = if (e.x < player.width / 2f) -SEEK_STEP_MS else SEEK_STEP_MS
+                        player.seekByOffset(offset)
+                        return true
                     }
 
                     override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -121,6 +146,80 @@ class VideoPlayer: StandardGSYVideoPlayer {
             }
         }
     }
+
+    fun seekByOffset(offsetMs: Long) {
+        if (mCurrentState == CURRENT_STATE_NORMAL || mCurrentState == CURRENT_STATE_ERROR) {
+            return
+        }
+        val duration = getDuration().takeIf { it > 0 } ?: 0L
+        val current = getCurrentPositionWhenPlaying()
+        val target = (current + offsetMs).coerceIn(0L, duration.takeIf { it > 0 } ?: Long.MAX_VALUE)
+        seekTo(target)
+        resolveDanmakuSeek(target)
+        showOverlayTip(if (offsetMs < 0) "-10s" else "+10s", 800)
+    }
+
+    override fun touchSurfaceDown(x: Float, y: Float) {
+        super.touchSurfaceDown(x, y)
+        cancelPlaybackContentAnimation()
+        mChangeEpisode = false
+        episodeGestureOffset = 0
+        episodeGestureTranslation = 0f
+    }
+
+    override fun touchSurfaceMoveFullLogic(absDeltaX: Float, absDeltaY: Float) {
+        if (mChangeEpisode) {
+            return
+        }
+        val activity = getActivityContext() as? Activity
+        val curWidth = if (activity != null) {
+            if (CommonUtil.getCurrentScreenLand(activity)) mScreenHeight else mScreenWidth
+        } else {
+            width
+        }
+        if (absDeltaX <= mThreshold && absDeltaY <= mThreshold) {
+            return
+        }
+        cancelProgressTimer()
+        if (absDeltaX >= mThreshold) {
+            val screenWidth = CommonUtil.getScreenWidth(context)
+            if (Math.abs(screenWidth - mDownX) > mSeekEndOffset) {
+                mChangePosition = true
+                mDownPosition = getCurrentPositionWhenPlaying()
+            } else {
+                mShowVKey = true
+            }
+            return
+        }
+        val screenHeight = CommonUtil.getScreenHeight(context)
+        val noEnd = Math.abs(screenHeight - mDownY) > mSeekEndOffset
+        if (mFirstTouch) {
+            mFirstTouch = false
+        }
+        if (noEnd && curWidth > 0) {
+            mChangeEpisode = true
+        } else {
+            mShowVKey = true
+        }
+    }
+
+    override fun touchSurfaceMove(deltaX: Float, deltaY: Float, y: Float) {
+        if (mChangeEpisode) {
+            val offset = resolveEpisodeGestureOffset(deltaY)
+            if (offset != episodeGestureOffset) {
+                episodeGestureOffset = offset
+                if (offset == 0) {
+                    showOverlayTip()
+                } else {
+                    showEpisodeGestureTip(offset)
+                }
+            }
+            updatePlaybackContentTranslation(deltaY)
+            return
+        }
+        super.touchSurfaceMove(deltaX, deltaY, y)
+    }
+
     override fun touchSurfaceUp(){
         if (isLongPressSpeed) {
             isLongPressSpeed = false
@@ -130,6 +229,15 @@ class VideoPlayer: StandardGSYVideoPlayer {
             resolveDanmakuStart(time)
         }
         super.touchSurfaceUp()
+        if (mChangeEpisode && episodeGestureOffset != 0) {
+            finishEpisodeGesture(episodeGestureOffset)
+            showOverlayTip()
+        } else {
+            resetPlaybackContentTranslation(animated = true)
+        }
+        mChangeEpisode = false
+        episodeGestureOffset = 0
+        episodeGestureTranslation = 0f
     }
 
     private fun setVideoSpeed(speed: Float) {
@@ -142,7 +250,10 @@ class VideoPlayer: StandardGSYVideoPlayer {
 
     override fun onPrepared() {
         super.onPrepared()
+        cancelPlaybackLoadTimeout()
+        hidePlayAddressError()
         onPrepareDanmaku(this)
+        VideoPlay.queuePreparedNextEpisode()
     }
     private fun onPrepareDanmaku(gsyVideoPlayer: VideoPlayer) {
         val view = gsyVideoPlayer.mDanmakuView
@@ -165,7 +276,9 @@ class VideoPlayer: StandardGSYVideoPlayer {
 
     override fun onVideoResume(isResume: Boolean) {
         super.onVideoResume(isResume)
+        cancelPlaybackLoadTimeout()
         danmakuOnResume()
+        ensureVideoSurfaceBound()
     }
     fun danmakuOnResume() {
         if (mDanmakuView != null && mDanmakuView!!.isPrepared && mDanmakuView!!.isPaused) {
@@ -184,6 +297,9 @@ class VideoPlayer: StandardGSYVideoPlayer {
 
     override fun onAutoCompletion() { //播放完成
         super.onAutoCompletion()
+        if (VideoPlay.videoManager.hasNext()) {
+            return
+        }
         VideoPlay.upDurIndex(1, this)
     }
 
@@ -211,7 +327,9 @@ class VideoPlayer: StandardGSYVideoPlayer {
 
     fun showOverlayTip(message: String? = null, delay: Long = 0) {
         tipView?.apply {
+            animate().cancel()
             message?.also {
+                defaultTipY?.let { y = it }
                 text = it
                 visibility = VISIBLE
                 alpha = 1f
@@ -221,10 +339,138 @@ class VideoPlayer: StandardGSYVideoPlayer {
                     }, delay)
                 }
             } ?: run {
+                defaultTipY?.let { y = it }
                 visibility = INVISIBLE
                 alpha = 0f
+                translationY = 0f
             }
         }
+    }
+
+    private fun showEpisodeGestureTip(offset: Int) {
+        val message = context.getString(
+            if (offset > 0) R.string.next_chapter else R.string.previous_chapter
+        )
+        tipView?.apply {
+            animate().cancel()
+            val targetTranslationY = episodeGestureTipTranslationY(offset)
+            text = message
+            visibility = VISIBLE
+            alpha = 0f
+            translationY = targetTranslationY + if (offset > 0) 18f else -18f
+            animate()
+                .alpha(1f)
+                .translationY(targetTranslationY)
+                .setDuration(120)
+                .start()
+        }
+    }
+
+    private fun resolveEpisodeGestureOffset(deltaY: Float): Int {
+        val threshold = episodeGestureThreshold()
+        return when {
+            deltaY <= -threshold -> 1
+            deltaY >= threshold -> -1
+            else -> 0
+        }
+    }
+
+    private fun episodeGestureThreshold(): Float {
+        val height = height.takeIf { it > 0 } ?: CommonUtil.getScreenHeight(context)
+        return height / 5f
+    }
+
+    private fun TextView.episodeGestureTipTranslationY(offset: Int): Float {
+        if (defaultTipY == null) {
+            defaultTipY = y
+        }
+        val containerHeight = this@VideoPlayer.height.takeIf { it > 0 }
+            ?: CommonUtil.getScreenHeight(context)
+        val tipHeight = measuredHeight.takeIf { it > 0 } ?: height.takeIf { it > 0 } ?: 0
+        val centerY = containerHeight * if (offset > 0) 0.88f else 0.12f
+        val targetY = centerY - tipHeight / 2f
+        return targetY - (defaultTipY ?: y)
+    }
+
+    private fun playbackContentViews(): List<View> {
+        val renderView = mTextureView?.getShowView()
+        return listOfNotNull(
+            renderView?.takeUnless { it is SurfaceView },
+            findViewById(R.id.danmaku_view)
+        ).filter { it.visibility == VISIBLE }
+    }
+
+    private fun updatePlaybackContentTranslation(deltaY: Float) {
+        val maxDistance = episodeGestureThreshold() * 1.15f
+        episodeGestureTranslation = deltaY.coerceIn(-maxDistance, maxDistance)
+        playbackContentViews().forEach { view ->
+            view.translationY = episodeGestureTranslation
+        }
+    }
+
+    private fun finishEpisodeGesture(offset: Int) {
+        if (!canChangeEpisode(offset)) {
+            VideoPlay.upDurIndex(offset, getCurrentPlayer())
+            resetPlaybackContentTranslation(animated = true)
+            return
+        }
+        val distance = (height.takeIf { it > 0 } ?: CommonUtil.getScreenHeight(context)).toFloat()
+        val outTranslation = if (offset > 0) -distance else distance
+        val inTranslation = -outTranslation
+        val views = playbackContentViews()
+        if (views.isEmpty()) {
+            VideoPlay.upDurIndex(offset, getCurrentPlayer())
+            return
+        }
+        views.forEachIndexed { index, view ->
+            val animator = view.animate()
+                .translationY(outTranslation)
+                .setDuration(140)
+            if (index == 0) {
+                animator.withEndAction {
+                    views.forEach { it.translationY = inTranslation }
+                    VideoPlay.upDurIndex(offset, getCurrentPlayer())
+                    views.forEach {
+                        it.animate()
+                            .translationY(0f)
+                            .setDuration(180)
+                            .start()
+                    }
+                }
+            }
+            animator.start()
+        }
+    }
+
+    private fun canChangeEpisode(offset: Int): Boolean {
+        val episodes = VideoPlay.episodes ?: return false
+        val target = VideoPlay.chapterInVolumeIndex + offset
+        return target >= 0 && target < episodes.size
+    }
+
+    private fun resetPlaybackContentTranslation(animated: Boolean) {
+        playbackContentViews().forEach { view ->
+            view.animate().cancel()
+            if (animated) {
+                view.animate()
+                    .translationY(0f)
+                    .setDuration(160)
+                    .start()
+            } else {
+                view.translationY = 0f
+            }
+        }
+    }
+
+    private fun cancelPlaybackContentAnimation() {
+        playbackContentViews().forEach {
+            it.animate().cancel()
+            it.translationY = 0f
+        }
+    }
+
+    companion object {
+        private const val SEEK_STEP_MS = 10_000L
     }
 
     private fun initView() {
@@ -236,6 +482,9 @@ class VideoPlayer: StandardGSYVideoPlayer {
             }
         }
         tipView = findViewById(R.id.tip_view)
+        tipView?.post {
+            defaultTipY = tipView?.y
+        }
         if (mIfCurrentIsFullscreen && !VideoPlay.fullBottomProgressBar) {
             mBottomProgressBar = null
         }
@@ -259,8 +508,15 @@ class VideoPlayer: StandardGSYVideoPlayer {
 
 
     override fun setUp(url: String?, cacheWithPlay: Boolean, cachePath: File?, title: String?): Boolean {
+        cancelPlaybackLoadTimeout()
         initDanmaku()
         return super.setUp(url, cacheWithPlay, cachePath, title)
+    }
+
+    override fun startPlayLogic() {
+        hidePlayAddressError()
+        startPlaybackLoadTimeout()
+        super.startPlayLogic()
     }
 
     private fun initDanmaku() {
@@ -394,6 +650,88 @@ class VideoPlayer: StandardGSYVideoPlayer {
         choiceEpisodeDialog.show()
     }
 
+    fun showPlaybackSpeedDialog() {
+        if (mHadPlay && !isChanging) {
+            showSpeedDialog()
+        }
+    }
+
+    fun getPlaySpeed(): Float {
+        return playSpeed
+    }
+
+    fun isPlayingForRestore(): Boolean {
+        return mCurrentState == CURRENT_STATE_PLAYING
+    }
+
+    fun updateTitle(title: String?) {
+        findViewById<TextView?>(R.id.title)?.text = title.orEmpty()
+    }
+
+    fun showResolvingLoading(show: Boolean) {
+        getCurrentPlayer().post {
+            val player = getCurrentPlayer()
+            if (show) {
+                player.findViewById<View?>(R.id.play_error)?.visibility = GONE
+                player.findViewById<View?>(R.id.start)?.visibility = INVISIBLE
+            }
+            player.findViewById<View?>(R.id.resolving_loading)?.visibility =
+                if (show) VISIBLE else GONE
+        }
+    }
+
+    fun showPlayAddressError() {
+        getCurrentPlayer().post {
+            val player = getCurrentPlayer()
+            cancelPlaybackLoadTimeout()
+            player.findViewById<View?>(R.id.resolving_loading)?.visibility = GONE
+            player.findViewById<View?>(R.id.loading)?.visibility = INVISIBLE
+            player.findViewById<View?>(R.id.start)?.visibility = INVISIBLE
+            player.findViewById<View?>(R.id.play_error)?.visibility = VISIBLE
+        }
+    }
+
+    fun hidePlayAddressError() {
+        getCurrentPlayer().post {
+            getCurrentPlayer().findViewById<View?>(R.id.play_error)?.visibility = GONE
+        }
+    }
+
+    private fun startPlaybackLoadTimeout() {
+        cancelPlaybackLoadTimeout()
+        playbackLoadTimeoutHandler.postDelayed(
+            playbackLoadTimeoutRunnable,
+            PLAYBACK_LOAD_TIMEOUT_MS
+        )
+    }
+
+    private fun cancelPlaybackLoadTimeout() {
+        playbackLoadTimeoutHandler.removeCallbacks(playbackLoadTimeoutRunnable)
+    }
+
+    private fun isWaitingForPlaybackStart(): Boolean {
+        return mCurrentState == CURRENT_STATE_PREPAREING ||
+                mCurrentState == CURRENT_STATE_PLAYING_BUFFERING_START
+    }
+
+    fun onSeamlessEpisodeChanged(title: String?) {
+        hidePlayAddressError()
+        nextUI()
+        updateTitle(title)
+        resetDanmaku()
+        ensureVideoSurfaceBound()
+    }
+
+    private fun resetDanmaku() {
+        releaseDanmaku(this)
+        mDanmakuView = null
+        mDanmakuContext = null
+        mParser = null
+        mDanmakuStartSeekPosition = 0
+        initDanmaku()
+        onPrepareDanmaku(this)
+    }
+
     private fun showSpeedDialog() {
         if (!mHadPlay) {
             return
@@ -412,6 +750,7 @@ class VideoPlayer: StandardGSYVideoPlayer {
                 } else {
                     playbackSpeed?.text = "倍速"
                 }
+                onPlaySpeedChanged?.invoke(playSpeed)
             }
 
             override fun finishDialog() {
@@ -443,6 +782,7 @@ class VideoPlayer: StandardGSYVideoPlayer {
     }
 
     override fun onError(what: Int, extra: Int) {
+        cancelPlaybackLoadTimeout()
         super.onError(what, extra)
         VideoPlay.saveRead()
         mSeekOnStart = VideoPlay.durChapterPos.toLong()
@@ -463,6 +803,7 @@ class VideoPlayer: StandardGSYVideoPlayer {
             val gsyVideoPlayer = gsyBaseVideoPlayer as VideoPlayer
             //对弹幕设置偏移记录
 //            gsyVideoPlayer.mDanmakuView = this.mDanmakuView
+            gsyVideoPlayer.onPlaybackLoadTimeout = this.onPlaybackLoadTimeout
             gsyVideoPlayer.mDanmakuStartSeekPosition = this.getCurrentPositionWhenPlaying()
             onPrepareDanmaku(gsyVideoPlayer)
         }
@@ -490,6 +831,7 @@ class VideoPlayer: StandardGSYVideoPlayer {
     }
 
     override fun release() {
+        cancelPlaybackLoadTimeout()
         super.release()
         releaseDanmaku(this)
     }
@@ -513,8 +855,9 @@ class VideoPlayer: StandardGSYVideoPlayer {
         return ExoVideoManager.SMALL_ID
     }
     override fun setDisplay(surface: Surface?) {
-        if (surface != null && mTextureView.getShowView() is SurfaceView) {
-            val surfaceView = (mTextureView.getShowView() as SurfaceView?)
+        val showView = mTextureView?.getShowView()
+        if (surface != null && showView is SurfaceView) {
+            val surfaceView = showView as SurfaceView?
             gsyVideoManager.setDisplayNew(surfaceView)
         } else if (surface != null) {
             gsyVideoManager.setDisplay(surface)
@@ -522,6 +865,30 @@ class VideoPlayer: StandardGSYVideoPlayer {
             gsyVideoManager.setDisplayNew(null)
         }
     }
+
+    override fun onVideoResume() {
+        super.onVideoResume()
+        cancelPlaybackLoadTimeout()
+        ensureVideoSurfaceBound()
+    }
+
+    fun ensureVideoSurfaceBound() {
+        post {
+            rebindVideoSurface()
+        }
+        postDelayed({
+            rebindVideoSurface()
+        }, 120)
+    }
+
+    private fun rebindVideoSurface() {
+        if (mSurface?.isValid == true) {
+            setDisplay(mSurface)
+        }
+        mTextureView?.requestLayout()
+        mTextureView?.invalidate()
+    }
+
     fun nextUI() { resetProgressAndTime() }
 
 

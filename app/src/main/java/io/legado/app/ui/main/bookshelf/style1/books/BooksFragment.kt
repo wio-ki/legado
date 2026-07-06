@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView.Adapter.StateRestorationPolicy
 import io.legado.app.R
 import io.legado.app.base.BaseFragment
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.appDb
@@ -29,6 +30,8 @@ import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.book.info.BookInfoActivity
 import io.legado.app.ui.main.MainViewModel
 import io.legado.app.utils.cnCompare
+import io.legado.app.utils.applyMainBottomBarPadding
+import io.legado.app.utils.dpToPx
 import io.legado.app.utils.flowWithLifecycleAndDatabaseChangeFirst
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.setEdgeEffectColor
@@ -52,13 +55,21 @@ import kotlin.math.max
 class BooksFragment() : BaseFragment(R.layout.fragment_books),
     BaseBooksAdapter.CallBack {
 
-    constructor(position: Int, group: BookGroup) : this() {
+    constructor(
+        position: Int,
+        group: BookGroup,
+        secondaryGroupId: Long,
+        bookSort: Int,
+        enableRefresh: Boolean,
+        onlyUpdateRead: Boolean
+    ) : this() {
         val bundle = Bundle()
         bundle.putInt("position", position)
         bundle.putLong("groupId", group.groupId)
-        bundle.putInt("bookSort", group.getRealBookSort())
-        bundle.putBoolean("enableRefresh", group.enableRefresh)
-        bundle.putBoolean("onlyUpdateRead", group.onlyUpdateRead)
+        bundle.putLong("secondaryGroupId", secondaryGroupId)
+        bundle.putInt("bookSort", bookSort)
+        bundle.putBoolean("enableRefresh", enableRefresh)
+        bundle.putBoolean("onlyUpdateRead", onlyUpdateRead)
         arguments = bundle
     }
 
@@ -83,11 +94,14 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
         private set
     var groupId = -1L
         private set
+    var secondaryGroupId = BookGroup.IdAll
+        private set
     var bookSort = 0
         private set
     private var upLastUpdateTimeJob: Job? = null
     private var enableRefresh = true
     private var onlyUpdateRead = false
+    private var secondaryGroupFilterId = BookGroup.IdAll
     private val bookshelfMargin by lazy { AppConfig.bookshelfMargin }
     private var itemCount = 0
     private var totalRows = 0
@@ -96,9 +110,11 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
         arguments?.let {
             position = it.getInt("position", 0)
             groupId = it.getLong("groupId", -1)
+            secondaryGroupId = it.getLong("secondaryGroupId", BookGroup.IdAll)
             bookSort = it.getInt("bookSort", 0)
             enableRefresh = it.getBoolean("enableRefresh", true)
             onlyUpdateRead = it.getBoolean("onlyUpdateRead", false)
+            secondaryGroupFilterId = secondaryGroupId
             binding.refreshLayout.isEnabled = enableRefresh
         }
         initRecyclerView()
@@ -107,8 +123,13 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
 
     private fun initRecyclerView() {
         binding.rvBookshelf.setEdgeEffectColor(primaryColor)
+        binding.rvBookshelf.clipToPadding = false
+        binding.rvBookshelf.applyMainBottomBarPadding(
+            usePaddingForRecyclerView = true
+        )
         upFastScrollerBar()
         binding.refreshLayout.setColorSchemeColors(accentColor)
+        binding.refreshLayout.setProgressViewOffset(true, (-28).dpToPx(), 56.dpToPx())
         binding.refreshLayout.setOnRefreshListener {
             binding.refreshLayout.isRefreshing = false
             activityViewModel.upToc(booksAdapter.getItems(), onlyUpdateRead)
@@ -162,7 +183,7 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
                             outRect.set(bookshelfMargin, bookshelfMargin + 24, bookshelfMargin, bookshelfMargin)
                         }
                         totalRows - 1 -> { //最后一行加额外下边距
-                            outRect.set(bookshelfMargin, bookshelfMargin, bookshelfMargin, bookshelfMargin + 24)
+                            outRect.set(bookshelfMargin, bookshelfMargin, bookshelfMargin, bookshelfMargin)
                         }
                         else -> {
                             outRect.set(bookshelfMargin, bookshelfMargin, bookshelfMargin, bookshelfMargin)
@@ -174,7 +195,7 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
                             outRect.set(0, bookshelfMargin + 24, 0, bookshelfMargin)
                         }
                         itemCount - 1 -> {
-                            outRect.set(0, bookshelfMargin, 0, bookshelfMargin + 24)
+                            outRect.set(0, bookshelfMargin, 0, bookshelfMargin)
                         }
                         else -> {
                             outRect.set(0, bookshelfMargin, 0, bookshelfMargin)
@@ -210,12 +231,26 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
         binding.refreshLayout.isEnabled = enable
     }
 
+    fun setOnlyUpdateRead(onlyRead: Boolean) {
+        onlyUpdateRead = onlyRead
+        arguments?.putBoolean("onlyUpdateRead", onlyRead)
+    }
+
+    fun setSecondaryGroupFilter(groupId: Long) {
+        if (secondaryGroupFilterId == groupId) return
+        secondaryGroupId = groupId
+        arguments?.putLong("secondaryGroupId", groupId)
+        secondaryGroupFilterId = groupId
+        upRecyclerData()
+    }
+
     /**
      * 更新书籍列表信息
      */
     private fun upRecyclerData() {
         booksFlowJob?.cancel()
         booksFlowJob = viewLifecycleOwner.lifecycleScope.launch {
+            val userGroupIds = appDb.bookGroupDao.idsSum
             appDb.bookDao.flowByGroup(groupId).map { list ->
                 //排序
                 when (bookSort) {
@@ -237,13 +272,22 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
 
                     else -> list.sortedByDescending { it.durChapterTime }
                 }
+            }.map { list ->
+                val filteredList = if (secondaryGroupFilterId == BookGroup.IdAll) {
+                    list
+                } else {
+                    list.filter { it.isInSecondaryGroup(secondaryGroupFilterId, userGroupIds) }
+                }
+                list to filteredList
             }.flowWithLifecycleAndDatabaseChangeFirst(
                 viewLifecycleOwner.lifecycle,
                 Lifecycle.State.RESUMED,
                 AppDatabase.BOOK_TABLE_NAME
             ).catch {
                 AppLog.put("书架更新出错", it)
-            }.conflate().flowOn(Dispatchers.Default).collect { list ->
+            }.conflate().flowOn(Dispatchers.Default).collect { (allBooks, list) ->
+                (parentFragment as? io.legado.app.ui.main.bookshelf.style1.BookshelfFragment1)
+                    ?.onBooksChanged(groupId, allBooks)
                 itemCount = list.size
                 val spanCount = bookshelfLayout
                 if (spanCount >= 2) {
@@ -310,6 +354,19 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books),
 
     override fun isUpdate(bookUrl: String): Boolean {
         return activityViewModel.isUpdate(bookUrl)
+    }
+
+    private fun Book.isInSecondaryGroup(groupId: Long, userGroupIds: Long): Boolean {
+        return when (groupId) {
+            BookGroup.IdAll -> true
+            BookGroup.IdLocal -> type and BookType.local > 0
+            BookGroup.IdAudio -> type and BookType.audio > 0
+            BookGroup.IdImage -> type and BookType.image > 0
+            BookGroup.IdVideo -> type and BookType.video > 0
+            BookGroup.IdError -> type and BookType.updateError > 0
+            BookGroup.IdUngrouped -> userGroupIds and group == 0L && type and BookType.local == 0
+            else -> groupId > 0 && group and groupId > 0
+        }
     }
 
     @SuppressLint("NotifyDataSetChanged")

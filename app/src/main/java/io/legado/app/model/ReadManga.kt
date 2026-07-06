@@ -1,15 +1,20 @@
 package io.legado.app.model
 
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.AppConst
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
+import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.ReadRecentBook
 import io.legado.app.data.entities.ReadRecord
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.ConcurrentRateLimiter
+import io.legado.app.help.ReadRecordDailyHelper
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.CacheManifestHelper
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isSameNameAuthor
@@ -20,6 +25,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.globalExecutor
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.ui.about.ReadRecordWidgetStore
 import io.legado.app.ui.book.manga.entities.BaseMangaPage
 import io.legado.app.ui.book.manga.entities.MangaChapter
 import io.legado.app.ui.book.manga.entities.MangaContent
@@ -70,8 +76,9 @@ object ReadManga : CoroutineScope by MainScope() {
 
     fun resetData(book: Book) {
         ReadManga.book = book
+        readRecord.deviceId = AppConst.androidId
         readRecord.bookName = book.name
-        readRecord.readTime = appDb.readRecordDao.getReadTime(book.name) ?: 0
+        readRecord.readTime = appDb.readRecordDao.getReadTime(AppConst.androidId, book.name) ?: 0
         chapterSize = appDb.bookChapterDao.getChapterCount(book.bookUrl)
         simulatedChapterSize = if (book.readSimulating()) {
             book.simulatedTotalChapterNum()
@@ -132,10 +139,13 @@ object ReadManga : CoroutineScope by MainScope() {
             if (!AppConfig.enableReadRecord) {
                 return@execute
             }
-            readRecord.readTime = readRecord.readTime + System.currentTimeMillis() - readStartTime
-            readStartTime = System.currentTimeMillis()
-            readRecord.lastRead = System.currentTimeMillis()
+            val now = System.currentTimeMillis()
+            val delta = now - readStartTime
+            readRecord.readTime += delta
+            readStartTime = now
+            readRecord.lastRead = now
             appDb.readRecordDao.insert(readRecord)
+            ReadRecordDailyHelper.record(delta, now)
         }
     }
 
@@ -344,6 +354,8 @@ object ReadManga : CoroutineScope by MainScope() {
                     }
                 }
                 appDb.bookDao.update(book)
+                appDb.readRecentBookDao.insert(ReadRecentBook(book.bookUrl, book.durChapterTime))
+                ReadRecordWidgetStore.updateRecentSnapshot(book, book.durChapterTime)
             }.onFailure {
                 AppLog.put("保存漫画阅读进度信息出错\n$it", it)
             }
@@ -467,11 +479,12 @@ object ReadManga : CoroutineScope by MainScope() {
         if (!book.canUpdate) return
         if (chapterSize - durChapterIndex - 1 >= 3) return
         if (System.currentTimeMillis() - book.lastCheckTime < 600000) return
-        book.lastCheckTime = System.currentTimeMillis()
         val oldBook = book.copy()
         WebBook.getChapterList(this, bookSource, book).onSuccess(IO) { cList ->
             ensureActive()
             if (cList.size > chapterSize) {
+                val oldChapterList = appDb.bookChapterDao.getChapterList(oldBook.bookUrl)
+                BookHelp.remapContentCache(oldBook, oldChapterList, cList)
                 if (oldBook.bookUrl == book.bookUrl) {
                     appDb.bookDao.update(book)
                 } else {
@@ -480,6 +493,7 @@ object ReadManga : CoroutineScope by MainScope() {
                 }
                 appDb.bookChapterDao.delByBook(oldBook.bookUrl)
                 appDb.bookChapterDao.insert(*cList.toTypedArray())
+                CacheManifestHelper.refreshAsync(book, cList)
                 onChapterListUpdated(book, false)
                 nextMangaChapter ?: loadContent(durChapterIndex + 1)
             }
@@ -514,22 +528,20 @@ object ReadManga : CoroutineScope by MainScope() {
         }.onError {
             AppLog.put("拉取阅读进度失败", it)
         }.onSuccess { progress ->
-            if (progress == null || progress.durChapterIndex < book.durChapterIndex ||
-                (progress.durChapterIndex == book.durChapterIndex
-                        && progress.durChapterPos < book.durChapterPos)
-            ) {
-                // 服务器没有进度或者进度比服务器快，上传现有进度
-                Coroutine.async {
-                    AppWebDav.uploadBookProgress(BookProgress(book), uploadSuccessAction)
-                    book.update()
+            when (progress?.compareWith(book)) {
+                null,
+                BookProgressComparison.LOCAL_NEWER -> {
+                    Coroutine.async {
+                        AppWebDav.uploadBookProgress(BookProgress(book), uploadSuccessAction)
+                        book.update()
+                    }
                 }
-            } else if (progress.durChapterIndex > book.durChapterIndex ||
-                progress.durChapterPos > book.durChapterPos
-            ) {
-                // 进度比服务器慢，执行传入动作
-                newProgressAction?.invoke(progress)
-            } else {
-                syncSuccessAction?.invoke()
+                BookProgressComparison.REMOTE_NEWER -> {
+                    newProgressAction?.invoke(progress)
+                }
+                BookProgressComparison.SAME -> {
+                    syncSuccessAction?.invoke()
+                }
             }
         }
     }

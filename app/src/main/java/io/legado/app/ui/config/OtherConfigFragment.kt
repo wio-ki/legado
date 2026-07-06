@@ -2,6 +2,7 @@ package io.legado.app.ui.config
 
 import android.annotation.SuppressLint
 import android.content.ComponentName
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -10,8 +11,10 @@ import androidx.core.view.postDelayed
 import androidx.fragment.app.activityViewModels
 import androidx.preference.ListPreference
 import androidx.preference.Preference
+import androidx.preference.SwitchPreferenceCompat
 import com.jeremyliao.liveeventbus.LiveEventBus
 import io.legado.app.R
+import io.legado.app.base.BaseActivity
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.databinding.DialogEditCodeBinding
@@ -28,6 +31,7 @@ import io.legado.app.model.ImageProvider
 import io.legado.app.receiver.SharedReceiverActivity
 import io.legado.app.service.WebService
 import io.legado.app.ui.file.HandleFileContract
+import io.legado.app.ui.book.read.config.ContentSelectMenuConfigDialog
 import io.legado.app.ui.video.config.SettingsDialog
 import io.legado.app.ui.widget.code.addJsonPattern
 import io.legado.app.ui.widget.number.NumberPickerDialog
@@ -62,9 +66,11 @@ class OtherConfigFragment : PreferenceFragment(),
     }
 
     private var onlyUpdateReadPref: Preference? = null
+    private var targetKeyHandled = false
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         putPrefBoolean(PreferKey.processText, isProcessTextEnabled())
+        migrateListPreferenceValues()
         addPreferencesFromResource(R.xml.pref_config_other)
         upPreferenceSummary(PreferKey.userAgent, AppConfig.userAgent)
         upPreferenceSummary(PreferKey.preDownloadNum, AppConfig.preDownloadNum.toString())
@@ -77,8 +83,22 @@ class OtherConfigFragment : PreferenceFragment(),
         upPreferenceSummary(PreferKey.bitmapCacheSize, AppConfig.bitmapCacheSize.toString())
         upPreferenceSummary(PreferKey.imageRetainNum, AppConfig.imageRetainNum.toString())
         upPreferenceSummary(PreferKey.sourceEditMaxLine, AppConfig.sourceEditMaxLine.toString())
+        upPreferenceSummary(PreferKey.epubParseMode, AppConfig.epubParseMode.toString())
         onlyUpdateReadPref = findPreference<Preference>(PreferKey.onlyUpdateRead)?.also {
             it.isVisible = AppConfig.autoRefreshBook
+        }
+    }
+
+    private fun migrateListPreferenceValues() {
+        val sharedPreferences = preferenceManager.sharedPreferences ?: return
+        val epubParseMode = sharedPreferences.all[PreferKey.epubParseMode]
+        if (epubParseMode != null && epubParseMode !is String) {
+            val value = epubParseMode.toString().toIntOrNull()
+                ?.coerceIn(AppConfig.EPUB_PARSE_MODE_NEW, AppConfig.EPUB_PARSE_MODE_CLASSIC)
+                ?: AppConfig.EPUB_PARSE_MODE_NEW
+            sharedPreferences.edit()
+                .putString(PreferKey.epubParseMode, value.toString())
+                .apply()
         }
     }
 
@@ -87,6 +107,12 @@ class OtherConfigFragment : PreferenceFragment(),
         activity?.setTitle(R.string.other_setting)
         preferenceManager.sharedPreferences?.registerOnSharedPreferenceChangeListener(this)
         listView.setEdgeEffectColor(primaryColor)
+        consumeTargetKey()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        consumeTargetKey()
     }
 
     override fun onDestroy() {
@@ -132,6 +158,8 @@ class OtherConfigFragment : PreferenceFragment(),
                 }
 
             PreferKey.cleanCache -> clearCache()
+            PreferKey.contentSelectMenuConfig -> ContentSelectMenuConfigDialog()
+                .show(parentFragmentManager, "contentSelectMenuConfig")
             PreferKey.uploadRule -> showDialogFragment<DirectLinkUploadConfig>()
             PreferKey.checkSource -> showDialogFragment<CheckSourceConfig>()
             PreferKey.bitmapCacheSize -> {
@@ -208,7 +236,6 @@ class OtherConfigFragment : PreferenceFragment(),
                 setProcessTextEnable(it.getBoolean(key, true))
             }
 
-            PreferKey.showDiscovery, PreferKey.showRss -> postEvent(EventBus.NOTIFY_MAIN, true)
             PreferKey.language -> listView.postDelayed(1000) {
                 appCtx.restart()
             }
@@ -233,9 +260,21 @@ class OtherConfigFragment : PreferenceFragment(),
                 upPreferenceSummary(key, AppConfig.sourceEditMaxLine.toString())
             }
 
+            PreferKey.epubParseMode -> {
+                upPreferenceSummary(key, AppConfig.epubParseMode.toString())
+            }
+
             PreferKey.autoRefresh -> {
                 val isEnabled = sharedPreferences?.getBoolean(key, false) ?: false
                 onlyUpdateReadPref?.isVisible = isEnabled
+            }
+
+            PreferKey.showLocalBookIcon -> {
+                postEvent(EventBus.BOOKSHELF_REFRESH, "")
+            }
+
+            PreferKey.highBrush -> {
+                (activity as? BaseActivity<*>)?.applyPreferredRefreshRate()
             }
         }
     }
@@ -368,6 +407,11 @@ class OtherConfigFragment : PreferenceFragment(),
             }
             cancelButton()
         }
+    }
+
+    private fun consumeTargetKey() {
+        if (targetKeyHandled) return
+        targetKeyHandled = consumeActivityTargetKey()
     }
 
 }

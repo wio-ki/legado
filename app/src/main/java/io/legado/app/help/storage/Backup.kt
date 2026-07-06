@@ -14,7 +14,10 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ThemeConfig
+import io.legado.app.help.config.ThemePackageManager
+import io.legado.app.help.config.NavigationBarIconConfig
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.lib.webdav.ProgressListener
 import io.legado.app.model.BookCover
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
@@ -46,7 +49,6 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import androidx.core.content.edit
 import io.legado.app.model.VideoPlay.VIDEO_PREF_NAME
-import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * 备份
@@ -62,6 +64,16 @@ object Backup {
 
     private val mutex = Mutex()
 
+    private val backgroundAssetDirNames = arrayOf(
+        "bg",
+        "font",
+        "covers",
+        PreferKey.bgImage,
+        PreferKey.bgImageN,
+        PreferKey.bookInfoBgImage,
+        PreferKey.bookInfoBgImageN
+    )
+
     private val backupFileNames by lazy {
         arrayOf(
             "bookshelf.json",
@@ -72,6 +84,7 @@ object Backup {
             "rssStar.json",
             "replaceRule.json",
             "readRecord.json",
+            "readRecordDaily.json",
             "searchHistory.json",
             "sourceSub.json",
             "txtTocRule.json",
@@ -124,15 +137,25 @@ object Backup {
         }
     }
 
-    suspend fun backupLocked(context: Context, path: String?) {
+    suspend fun backupLocked(
+        context: Context,
+        path: String?,
+        onWebDavUploadProgress: ProgressListener? = null,
+        targets: Set<String>? = null
+    ) {
         mutex.withLock {
             withContext(IO) {
-                backup(context, path)
+                backup(context, path, onWebDavUploadProgress, targets)
             }
         }
     }
 
-    private suspend fun backup(context: Context, path: String?) {
+    private suspend fun backup(
+        context: Context,
+        path: String?,
+        onWebDavUploadProgress: ProgressListener? = null,
+        targets: Set<String>? = null
+    ) {
         LogUtils.d(TAG, "开始备份 path:$path")
         LocalConfig.lastBackup = System.currentTimeMillis()
         val aes = BackupAES()
@@ -145,6 +168,7 @@ object Backup {
         writeListToJson(appDb.rssStarDao.all, "rssStar.json", backupPath)
         writeListToJson(appDb.replaceRuleDao.all, "replaceRule.json", backupPath)
         writeListToJson(appDb.readRecordDao.all, "readRecord.json", backupPath)
+        writeListToJson(appDb.readRecordDailyDao.allDesc, "readRecordDaily.json", backupPath)
         writeListToJson(appDb.searchKeywordDao.all, "searchHistory.json", backupPath)
         writeListToJson(appDb.ruleSubDao.all, "sourceSub.json", backupPath)
         writeListToJson(appDb.txtTocRuleDao.all, "txtTocRule.json", backupPath)
@@ -220,9 +244,28 @@ object Backup {
         }
         currentCoroutineContext().ensureActive()
         val zipFileName = getNowZipFileName()
-        val paths = arrayListOf(*backupFileNames)
+        val paths = backupFileNames
+            .filter { targets.shouldBackupTarget(it) }
+            .toMutableList()
         for (i in 0 until paths.size) {
             paths[i] = backupPath + File.separator + paths[i]
+        }
+        backgroundAssetDirNames.forEach { dirName ->
+            if (targets.shouldBackupTarget(dirName)) {
+                paths.add(appCtx.externalFiles.getFile(dirName).absolutePath)
+            }
+        }
+        if (targets.shouldBackupTarget(BackupThemePackageDedupe.themePackagesDirName)) {
+            BackupThemePackageDedupe.prepareBackupThemePackages(
+                sourceRoot = ThemePackageManager.rootDir,
+                backupRoot = File(backupPath)
+            )?.let {
+                paths.add(it.absolutePath)
+                paths.add(File(backupPath, BackupThemePackageDedupe.manifestFileName).absolutePath)
+            }
+        }
+        if (targets.shouldBackupTarget(NavigationBarIconConfig.rootDir.name)) {
+            paths.add(NavigationBarIconConfig.rootDir.absolutePath)
         }
         FileUtils.delete(zipFilePath)
         FileUtils.delete(zipFilePath.replace("tmp_", ""))
@@ -246,9 +289,12 @@ object Backup {
                 }
             }
             try {
-                AppWebDav.backUpWebDav(zipFileName)
+                AppWebDav.backUpWebDav(zipFileName, onWebDavUploadProgress)
             } catch (e: Exception) {
                 AppLog.put("上传备份至webdav失败\n$e", e)
+                if (onWebDavUploadProgress != null) {
+                    throw e
+                }
             }
         }
         FileUtils.delete(backupPath)
@@ -263,6 +309,10 @@ object Backup {
         }.let {
             AppWebDav.upBgs(it.toTypedArray())
         }
+    }
+
+    private fun Set<String>?.shouldBackupTarget(target: String): Boolean {
+        return this == null || contains(target)
     }
 
     private suspend fun writeListToJson(list: List<Any>, fileName: String, path: String) {

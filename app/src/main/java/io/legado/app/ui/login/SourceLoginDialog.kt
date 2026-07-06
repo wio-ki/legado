@@ -2,13 +2,14 @@ package io.legado.app.ui.login
 
 import android.annotation.SuppressLint
 import android.content.DialogInterface
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
-import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.core.view.setPadding
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
@@ -19,21 +20,21 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.databinding.DialogLoginBinding
-import io.legado.app.databinding.ItemFilletTextBinding
-import io.legado.app.databinding.ItemSourceEditBinding
-import io.legado.app.databinding.ItemSelectorSingleBinding
 import io.legado.app.lib.dialogs.alert
+import io.legado.app.lib.theme.applyUiToolbarTypeface
 import io.legado.app.lib.theme.primaryColor
+import io.legado.app.lib.theme.primaryTextColor
 import io.legado.app.ui.about.AppLogDialog
+import io.legado.app.ui.widget.RowUiForm
 import io.legado.app.utils.GSON
-import io.legado.app.utils.applyTint
+import io.legado.app.utils.applyUiMenuStyle
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.openUrl
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.sendToClip
-import io.legado.app.utils.setLayout
+import io.legado.app.utils.setLayoutWrapMaxHeight
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -47,14 +48,12 @@ import kotlin.text.lastIndexOf
 import kotlin.text.startsWith
 import kotlin.text.substring
 import android.view.MotionEvent
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatSpinner
 import io.legado.app.data.entities.rule.RowUi.Type
-import io.legado.app.ui.widget.text.TextInputLayout
 import io.legado.app.utils.buildMainHandler
 import io.legado.app.utils.indexOf
 import io.legado.app.utils.setSelectionSafely
@@ -68,6 +67,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
     private var oKToClose = false
     private var rowUis: List<RowUi>? = null
     private var rowUiName = arrayListOf<String>()
+    private val rowUiActionRunnables = hashMapOf<String, Runnable>()
     private var hasChange = false
     private var loginUrl: String? = null
     private val sourceLoginJsExtensions by lazy {
@@ -87,7 +87,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
 
     override fun upUiData(data: Map<String, Any?>?) {
         try {
-            activity?.runOnUiThread { // 在主线程中更新 UI
+            activity?.runOnUiThread { // 鍦ㄤ富绾跨▼涓洿鏂?UI
                 handleUpUiData(data)
             }
         } catch (e: Exception) {
@@ -118,11 +118,11 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
                     val loginUiJson = evalUiJs(codeStr)
                     rowUis = loginUi(loginUiJson)
                 }
-                rowUiBuilder(source, rowUis, deltaUp)
+                rowUiBuilderShared(source, rowUis, deltaUp)
             }
         } else {
             rowUis = loginUi(loginUiStr)
-            rowUiBuilder(source, rowUis, deltaUp)
+            rowUiBuilderShared(source, rowUis, deltaUp)
         }
     }
 
@@ -133,14 +133,16 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
             val newLoginInfo: MutableMap<String, String> = mutableMapOf()
             rowUis?.forEachIndexed { index, rowUi ->
                 val default = rowUi.default
-                when (val rowView = binding.root.findViewById<View>(index + 1000)) {
-                    is TextInputLayout -> {
+                val rowView = binding.root.findViewById<View>(index + 1000)
+                val editText = findLoginEditText(rowView)
+                when {
+                    editText != null -> {
                         val value = default ?: ""
                         newLoginInfo[rowUi.name] = value
-                        rowView.editText?.setText(value)
+                        editText.setText(value)
                     }
 
-                    is TextView -> {
+                    rowView is TextView -> {
                         when (rowUi.type) {
                             Type.button -> {
                                 rowView.text = rowUi.viewName ?: rowUi.name
@@ -158,7 +160,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
                         }
                     }
 
-                    is LinearLayout -> {
+                    rowView is LinearLayout -> {
                         val chars = rowUi.chars?.filterNotNull() ?: listOf("chars","is null")
                         val index = chars.indexOf(default)
                         newLoginInfo[rowUi.name] = default ?: run{
@@ -178,14 +180,16 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
             if (index != -1) {
                 val rowUi = rowUis?.getOrNull(index) ?: return@forEach
                 val value = value ?: rowUi.default
-                when (val rowView = binding.root.findViewById<View>(index + 1000)) {
-                    is TextInputLayout -> {
+                val rowView = binding.root.findViewById<View>(index + 1000)
+                val editText = findLoginEditText(rowView)
+                when {
+                    editText != null -> {
                         val value = value ?: ""
                         loginInfo[rowUi.name] = value
-                        rowView.editText?.setText(value)
+                        editText.setText(value)
                     }
 
-                    is TextView -> {
+                    rowView is TextView -> {
                         when (rowUi.type) {
                             Type.button -> {
                                 rowView.text = value ?: rowUi.viewName ?: key
@@ -204,7 +208,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
                         }
                     }
 
-                    is LinearLayout -> {
+                    rowView is LinearLayout -> {
                         val items = rowUi.chars?.filterNotNull() ?: listOf("chars","is null")
                         val index = items.indexOf(value)
                         rowView.findViewById<AppCompatSpinner>(R.id.sp_type)?.setSelectionSafely(index)
@@ -218,7 +222,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
 
     override fun onStart() {
         super.onStart()
-        setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        adjustLoginDialogSize()
     }
 
     suspend fun evalUiJs(jsStr: String): String? {
@@ -247,400 +251,115 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
         }.getOrNull()
     }
 
-    @SuppressLint("SetTextI18n", "ClickableViewAccessibility")
-    private fun rowUiBuilder(source: BaseSource, rowUis: List<RowUi>?, deltaUp: Boolean) {
+    @SuppressLint("SetTextI18n")
+    private fun rowUiBuilderShared(source: BaseSource, rowUis: List<RowUi>?, deltaUp: Boolean) {
+        val rows = rowUis ?: emptyList()
         val loginInfo = viewModel.loginInfo
-        if (!deltaUp) {
-            binding.flexbox.removeAllViews()
-            rowUiName.clear()
-        }
-        rowUis?.forEachIndexed { index, rowUi ->
-            val type = rowUi.type
-            val name = rowUi.name
-            val viewName = rowUi.viewName
-            val action = rowUi.action
-            val default = rowUi.default
-            var insertIndex = -1
-            if (deltaUp) {
-                val oldIndex = rowUiName.indexOf(name, index)
-                if (oldIndex == index) {
-                    binding.flexbox.getChildAt(oldIndex)?.let {
-                        it.id = index + 1000
-                        return@forEachIndexed
-                    }
-                } else if (oldIndex >= 0) {
-                    binding.flexbox.getChildAt(oldIndex)?.let {
-                        binding.flexbox.removeView(it)
-                        rowUiName.removeAt(oldIndex)
-                        binding.flexbox.addView(it, index)
-                        rowUiName.add(index, name)
-                        it.id = index + 1000
-                        return@forEachIndexed
+        rowUiName.clear()
+        rowUiName.addAll(rows.map { it.name })
+        RowUiForm.render(
+            container = binding.flexbox,
+            rows = rows,
+            values = buildLoginUiValues(rows, loginInfo),
+            callback = object : RowUiForm.Callback {
+                override fun onValueChanged(rowUi: RowUi, value: String) {
+                    hasChange = true
+                    loginInfo[rowUi.name] = value
+                    when {
+                        rowUi.type == Type.select && rowUi.action != null -> {
+                            handleButtonClick(source, rowUi.action, rowUi.name, false)
+                        }
+                        (rowUi.type == Type.text || rowUi.type == Type.password)
+                            && rowUi.action != null -> {
+                            rowUiActionRunnables.remove(rowUi.name)?.let {
+                                handler.removeCallbacks(it)
+                            }
+                            val runnable = Runnable {
+                                handleButtonClick(source, rowUi.action, rowUi.name, false)
+                            }
+                            rowUiActionRunnables[rowUi.name] = runnable
+                            handler.postDelayed(runnable, 600)
+                        }
                     }
                 }
-                if (oldIndex == -2) {
-                    rowUiName.add(name)
-                } else {
-                    rowUiName.add(index, name)
-                    insertIndex = index
+
+                override fun onAction(rowUi: RowUi, isLongClick: Boolean) {
+                    handleButtonClick(source, rowUi.action, rowUi.name, isLongClick)
                 }
-            } else {
-                rowUiName.add(name)
+
+                override fun resolveViewName(
+                    rowUi: RowUi,
+                    fallback: String,
+                    apply: (String) -> Unit
+                ) {
+                    resolveLoginViewName(rowUi, fallback, apply)
+                }
             }
-            when (type) {
-                Type.text -> ItemSourceEditBinding.inflate(
-                    layoutInflater,
-                    binding.root,
-                    false
-                ).let {
-                    val editText = it.editText
-                    binding.flexbox.addView(it.root, insertIndex)
-                    rowUi.style().apply {
-                        when (this.layout_justifySelf) {
-                            "center" -> editText.gravity = Gravity.CENTER
-                            "flex_end" -> editText.gravity = Gravity.END
-                        }
-                        apply(it.root)
-                    }
-                    it.root.id = index + 1000
-                    if (viewName == null) {
-                        it.textInputLayout.hint = name
-                    } else if (viewName.length in 3..19 && viewName.first() == '\'' && viewName.last() == '\'') {
-                        it.textInputLayout.hint = viewName.substring(1, viewName.length - 1)
-                    } else {
-                        it.textInputLayout.hint = name
-                        execute {
-                            evalUiJs(viewName)
-                        }.onSuccess { n ->
-                            if (n.isNullOrEmpty()) {
-                                it.textInputLayout.hint = "null"
-                            } else {
-                                it.textInputLayout.hint = n
-                            }
-                        }.onError{ _ ->
-                            it.textInputLayout.hint = "err"
-                        }
-                    }
-                    editText.setText(loginInfo[name] ?: default)
-                    action?.let { jsStr ->
-                        val watcher = object : TextWatcher {
-                            private var content: String? = null
-                            private val runnable = Runnable {
-                                handleButtonClick(source, jsStr, name, false)
-                            }
-                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
-                                content = s.toString()
-                            }
+        )
+        adjustLoginDialogSize()
+    }
 
-                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+    private fun adjustLoginDialogSize() {
+        setLayoutWrapMaxHeight(panelView = binding.vwBg, scrollView = binding.scrollLogin)
+    }
 
-                            override fun afterTextChanged(s: Editable?) {
-                                val reContent = s.toString()
-                                if (reContent != content) {
-                                    handler.removeCallbacks(runnable)
-                                    handler.postDelayed(runnable, 600)
-                                }
-                            }
-                        }
-                        editText.addTextChangedListener(watcher)
-                    }
-                }
-
-                Type.password -> ItemSourceEditBinding.inflate(
-                    layoutInflater,
-                    binding.root,
-                    false
-                ).let {
-                    val editText = it.editText
-                    binding.flexbox.addView(it.root, insertIndex)
-                    rowUi.style().apply {
-                        when (this.layout_justifySelf) {
-                            "center" -> editText.gravity = Gravity.CENTER
-                            "flex_end" -> editText.gravity = Gravity.END
-                        }
-                        apply(it.root)
-                    }
-                    it.root.id = index + 1000
-                    if (viewName == null) {
-                        it.textInputLayout.hint = name
-                    } else if (viewName.length in 3..19 && viewName.first() == '\'' && viewName.last() == '\'') {
-                        it.textInputLayout.hint = viewName.substring(1, viewName.length - 1)
-                    } else {
-                        it.textInputLayout.hint = name
-                        execute {
-                            evalUiJs(viewName)
-                        }.onSuccess { n ->
-                            if (n.isNullOrEmpty()) {
-                                it.textInputLayout.hint = "null"
-                            } else {
-                                it.textInputLayout.hint = n
-                            }
-                        }.onError{ _ ->
-                            it.textInputLayout.hint = "err"
-                        }
-                    }
-                    editText.inputType =
-                        InputType.TYPE_TEXT_VARIATION_PASSWORD or InputType.TYPE_CLASS_TEXT
-                    editText.setText(loginInfo[name] ?: default)
-                    action?.let { jsStr ->
-                        val watcher = object : TextWatcher {
-                            private var content: String? = null
-                            private val runnable = Runnable {
-                                handleButtonClick(source, jsStr, name, false)
-                            }
-                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
-                                content = s.toString()
-                            }
-
-                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-
-                            override fun afterTextChanged(s: Editable?) {
-                                val reContent = s.toString()
-                                if (reContent != content) {
-                                    handler.removeCallbacks(runnable)
-                                    handler.postDelayed(runnable, 600)
-                                }
-                            }
-                        }
-                        editText.addTextChangedListener(watcher)
-                    }
-                }
-
-                Type.select -> ItemSelectorSingleBinding.inflate(
-                    layoutInflater,
-                    binding.root,
-                    false
-                ).let {
-                    if (viewName == null) {
-                        it.spName.text = name
-                    } else if (viewName.length in 3..19 && viewName.first() == '\'' && viewName.last() == '\'') {
-                        it.spName.text = viewName.substring(1, viewName.length - 1)
-                    } else {
-                        it.spName.text = name
-                        execute {
-                            evalUiJs(viewName)
-                        }.onSuccess { n ->
-                            if (n.isNullOrEmpty()) {
-                                it.spName.text = "null"
-                            } else {
-                                it.spName.text = n
-                            }
-                        }.onError{ _ ->
-                            it.spName.text = "err"
-                        }
-                    }
-                    val chars = rowUi.chars?.filterNotNull() ?: listOf("chars","is null")
-                    val adapter = ArrayAdapter(
-                        requireContext(),
-                        R.layout.item_text_common,
-                        chars
-                    )
-                    adapter.setDropDownViewResource(R.layout.item_spinner_dropdown)
-                    val selector = it.spType
-                    selector.adapter = adapter
-                    val infoV = loginInfo[name]
-                    val char = if (infoV.isNullOrEmpty()) {
-                        hasChange = true
-                        default ?: chars[0]
-                    } else {
-                        infoV
-                    }
-                    loginInfo[name] = char
-                    val i = chars.indexOf(char)
-                    selector.setSelectionSafely(i)
-                    selector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                        var isInitializing = true
-                        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                            if (isInitializing) { //忽略初始化选择
-                                isInitializing = false
-                                return
-                            }
-                            hasChange = true
-                            loginInfo[name] = chars[position]
-                            if (action != null) {
-                                handleButtonClick(source, action, name, false)
-                            }
-                        }
-                        override fun onNothingSelected(parent: AdapterView<*>?) {
-                        }
-                    }
-                    binding.flexbox.addView(it.root, insertIndex)
-                    rowUi.style().apply {
-                        when (this.layout_justifySelf) {
-                            "flex_start" -> selector.gravity = Gravity.START
-                            "flex_end" -> selector.gravity = Gravity.END
-                        }
-                        apply(it.root)
-                    }
-                    it.root.id = index + 1000
-                }
-
-                Type.button -> ItemFilletTextBinding.inflate(
-                    layoutInflater,
-                    binding.root,
-                    false
-                ).let {
-                    binding.flexbox.addView(it.root, insertIndex)
-                    rowUi.style().apply {
-                        when (this.layout_justifySelf) {
-                            "flex_start" -> it.textView.gravity = Gravity.START
-                            "flex_end" -> it.textView.gravity = Gravity.END
-                        }
-                        apply(it.root)
-                    }
-                    it.root.id = index + 1000
-                    if (viewName == null) {
-                        it.textView.text = name
-                    } else if (viewName.length in 3..19 && viewName.first() == '\'' && viewName.last() == '\'') {
-                        val n = viewName.substring(1, viewName.length - 1)
-                        rowUi.viewName = n
-                        it.textView.text = n
-                    } else {
-                        it.textView.text = name
-                        execute {
-                            evalUiJs(viewName)
-                        }.onSuccess { n ->
-                            if (n.isNullOrEmpty()) {
-                                it.textView.text = "null"
-                            } else {
-                                rowUi.viewName = n //在回调handleUIDataUpdate用
-                                it.textView.text = n
-                            }
-                        }.onError{ _ ->
-                            it.textView.text = "err"
-                        }
-                    }
-                    it.textView.setPadding(16.dpToPx())
-                    var downTime = 0L
-                    it.root.setOnClickListener { //无障碍点击
-                        handleButtonClick(source, action, name, false)
-                    }
-                    it.root.setOnTouchListener { view, event ->
-                        when (event.action) {
-                            MotionEvent.ACTION_DOWN -> {
-                                view.isSelected = true
-                                downTime = System.currentTimeMillis()
-                            }
-                            MotionEvent.ACTION_UP -> {
-                                view.isSelected = false
-                                val upTime = System.currentTimeMillis()
-                                if (upTime - lastClickTime < 200) {
-                                    return@setOnTouchListener true
-                                }
-                                lastClickTime = upTime
-                                handleButtonClick(source, action, name, upTime > downTime + 666)
-                            }
-                            MotionEvent.ACTION_CANCEL -> {
-                                view.isSelected = false
-                            }
-                        }
-                        return@setOnTouchListener true
-                    }
-                }
-
-                Type.toggle -> ItemFilletTextBinding.inflate(
-                    layoutInflater,
-                    binding.root,
-                    false
-                ).let {
-                    var newName = name
-                    var left = true
-                    binding.flexbox.addView(it.root, insertIndex)
-                    rowUi.style().apply {
-                        when (this.layout_justifySelf) {
-                            "flex_start" -> it.textView.gravity = Gravity.START
-                            "flex_end" -> it.textView.gravity = Gravity.END
-                            "right" -> left = false
-                        }
-                        apply(it.root)
-                    }
-                    it.root.id = index + 1000
+    private fun buildLoginUiValues(
+        rows: List<RowUi>,
+        loginInfo: MutableMap<String, String>
+    ): Map<String, String> {
+        val values = hashMapOf<String, String>()
+        rows.forEach { rowUi ->
+            val value = when (rowUi.type) {
+                Type.select, Type.toggle -> {
                     val chars = rowUi.chars?.filterNotNull() ?: listOf("chars is null")
-                    val infoV = loginInfo[name]
-                    var char = if (infoV.isNullOrEmpty()) {
-                        hasChange = true
-                        default ?: chars[0]
-                    } else {
-                        infoV
-                    }
-                    loginInfo[name] = char
-                    if (viewName == null) {
-                        it.textView.text = if (left) char + name else name + char
-                    } else if (viewName.length in 3..19 && viewName.first() == '\'' && viewName.last() == '\'') {
-                        val n = viewName.substring(1, viewName.length - 1)
-                        rowUi.viewName = n
-                        newName = n
-                        it.textView.text = if (left) char + n else n + char
-                    } else {
-                        it.textView.text = if (left) char + name else name + char
-                        execute {
-                            evalUiJs(viewName)
-                        }.onSuccess { n ->
-                            if (n.isNullOrEmpty()) {
-                                it.textView.text = char + "null"
-                            } else {
-                                rowUi.viewName = n //存放新名字，在回调handleUIDataUpdate时用
-                                newName = n //下面切换时用
-                                it.textView.text = if (left) char + n else n + char
-                            }
-                        }.onError{ _ ->
-                            it.textView.text = char + "err"
-                        }
-                    }
-                    it.textView.setPadding(16.dpToPx())
-                    var downTime = 0L
-                    it.root.setOnClickListener { _ ->
-                        val currentIndex = chars.indexOf(char)
-                        val nextIndex = (currentIndex + 1) % chars.size
-                        char = chars.getOrNull(nextIndex) ?: ""
-                        hasChange = true
-                        loginInfo[name] = char
-                        it.textView.text = if (left) char + newName else newName + char
-                        handleButtonClick(source, action, name, false)
-                    }
-                    it.root.setOnTouchListener { view, event ->
-                        when (event.action) {
-                            MotionEvent.ACTION_DOWN -> {
-                                view.isSelected = true
-                                downTime = System.currentTimeMillis()
-                            }
-                            MotionEvent.ACTION_UP -> {
-                                view.isSelected = false
-                                val upTime = System.currentTimeMillis()
-                                if (upTime - lastClickTime < 200) {
-                                    return@setOnTouchListener true
-                                }
-                                lastClickTime = upTime
-                                val currentIndex = chars.indexOf(char)
-                                val nextIndex = (currentIndex + 1) % chars.size
-                                char = chars.getOrNull(nextIndex) ?: ""
-                                hasChange = true
-                                loginInfo[name] = char
-                                it.textView.text = if (left) char + newName else newName + char
-                                handleButtonClick(source, action, name, upTime > downTime + 666)
-                            }
-                            MotionEvent.ACTION_CANCEL -> {
-                                view.isSelected = false
-                            }
-                        }
-                        return@setOnTouchListener true
-                    }
+                    loginInfo[rowUi.name]?.takeIf { it.isNotEmpty() }
+                        ?: rowUi.default
+                        ?: chars.firstOrNull()
+                        ?: ""
                 }
+                else -> loginInfo[rowUi.name] ?: rowUi.default.orEmpty()
             }
+            if ((rowUi.type == Type.select || rowUi.type == Type.toggle)
+                && loginInfo[rowUi.name] != value
+            ) {
+                hasChange = true
+                loginInfo[rowUi.name] = value
+            }
+            values[rowUi.name] = value
         }
-        if (deltaUp && rowUis != null) {
-            val newRowUiSize = rowUis.size
-            for (i in binding.flexbox.childCount - 1 downTo newRowUiSize) {
-                binding.flexbox.removeViewAt(i)
+        return values
+    }
+
+    private fun resolveLoginViewName(
+        rowUi: RowUi,
+        fallback: String,
+        apply: (String) -> Unit
+    ) {
+        val viewName = rowUi.viewName
+        when {
+            viewName == null -> apply(fallback)
+            viewName.length in 3..19 && viewName.first() == '\'' && viewName.last() == '\'' -> {
+                val name = viewName.substring(1, viewName.length - 1)
+                rowUi.viewName = name
+                apply(name)
             }
-            if (rowUiName.size > newRowUiSize) {
-                rowUiName.subList(newRowUiSize, rowUiName.size).clear()
+            else -> {
+                apply(fallback)
+                execute {
+                    evalUiJs(viewName)
+                }.onSuccess { name ->
+                    val resolvedName = name?.takeIf { it.isNotEmpty() } ?: "null"
+                    rowUi.viewName = resolvedName
+                    apply(resolvedName)
+                }.onError { _ ->
+                    apply("err")
+                }
             }
         }
     }
 
     private fun buttonUi(source: BaseSource, rowUis: List<RowUi>?) {
-        rowUiBuilder(source, rowUis, false)
+        rowUiBuilderShared(source, rowUis, false)
         binding.toolBar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.menu_ok -> {
@@ -666,6 +385,14 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
     }
 
     override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
+        view.setOnTouchListener { _, event ->
+            val isOutsidePanel = !event.isInsideRoundedPanel(binding.vwBg)
+            if (isOutsidePanel && event.action == MotionEvent.ACTION_UP) {
+                dismiss()
+            }
+            isOutsidePanel
+        }
+        binding.vwBg.setOnClickListener { }
         val source = viewModel.source ?: return
         loginUrl = source.getLoginJs()
         val loginUiStr = source.loginUi ?: return
@@ -688,10 +415,40 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
             rowUis = loginUi(loginUiStr)
             buttonUi(source, rowUis)
         }
-        binding.toolBar.setBackgroundColor(primaryColor)
+        binding.toolBar.setBackgroundColor(requireContext().primaryColor)
+        binding.toolBar.setTitleTextColor(primaryTextColor)
         binding.toolBar.title = getString(R.string.login_source, source.getTag())
+        binding.toolBar.applyUiToolbarTypeface(requireContext())
         binding.toolBar.inflateMenu(R.menu.source_login)
-        binding.toolBar.menu.applyTint(requireContext())
+        binding.toolBar.menu.applyUiMenuStyle(requireContext())
+    }
+
+    private fun MotionEvent.isInsideRoundedPanel(panel: View): Boolean {
+        val location = IntArray(2)
+        panel.getLocationOnScreen(location)
+        val localX = rawX - location[0]
+        val localY = rawY - location[1]
+        val width = panel.width.toFloat()
+        val height = panel.height.toFloat()
+        if (localX < 0f || localY < 0f || localX > width || localY > height) {
+            return false
+        }
+        val radius = resources.getDimension(R.dimen.ui_panel_radius)
+            .coerceAtMost(width / 2f)
+            .coerceAtMost(height / 2f)
+        val centerX = when {
+            localX < radius -> radius
+            localX > width - radius -> width - radius
+            else -> localX
+        }
+        val centerY = when {
+            localY < radius -> radius
+            localY > height - radius -> height - radius
+            else -> localY
+        }
+        val dx = localX - centerX
+        val dy = localY - centerY
+        return dx * dx + dy * dy <= radius * radius
     }
 
     private fun handleButtonClick(source: BaseSource, action: String?, name: String, isLongClick: Boolean) {
@@ -703,10 +460,11 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
                 val buttonFunctionJS = action
                 val loginJS = loginUrl ?: return@launch
                 kotlin.runCatching {
+                    val loginData = getLoginData(rowUis)
                     runScriptWithContext {
                         source.evalJS("$loginJS\n$buttonFunctionJS") {
                             put("java", sourceLoginJsExtensions)
-                            put("result", getLoginData(rowUis))
+                            put("result", loginData)
                             put("book", viewModel.book)
                             put("chapter", viewModel.chapter)
                             put("isLongClick", isLongClick)
@@ -720,19 +478,28 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
         }
     }
 
-    private fun getLoginData(rowUis: List<RowUi>?): MutableMap<String, String> {
+    private suspend fun getLoginData(rowUis: List<RowUi>?): MutableMap<String, String> {
         val loginData = hashMapOf<String, String>()
-        rowUis?.forEachIndexed { index, rowUi ->
-            when (rowUi.type) {
-                Type.text, Type.password -> {
-                    val rowView = binding.root.findViewById<View>(index + 1000)
-                    ItemSourceEditBinding.bind(rowView).editText.text.let {
-                        loginData[rowUi.name] = it?.toString() ?: rowUi.default ?: "" //没文本的时候存空字符串,而不是删除loginInfo
+        withContext(Main) {
+            rowUis?.forEachIndexed { index, rowUi ->
+                when (rowUi.type) {
+                    Type.text, Type.password -> {
+                        val rowView = binding.root.findViewById<View>(index + 1000)
+                        loginData[rowUi.name] = findLoginEditText(rowView)
+                            ?.text
+                            ?.toString()
+                            ?: viewModel.loginInfo[rowUi.name]
+                            ?: rowUi.default
+                            ?: "" //没文本的时候存空字符串,而不是删除loginInfo
                     }
                 }
             }
         }
         return viewModel.loginInfo.toMutableMap().apply { putAll(loginData) }
+    }
+
+    private fun findLoginEditText(rowView: View?): EditText? {
+        return rowView as? EditText ?: rowView?.findViewById(R.id.editText)
     }
 
     private fun login(source: BaseSource) {
@@ -780,6 +547,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
         }
         if (initHandler) {
             handler.removeCallbacksAndMessages(null)
+            rowUiActionRunnables.clear()
         }
         super.onDismiss(dialog)
         activity?.finish()

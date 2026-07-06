@@ -23,7 +23,7 @@ import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.RealPathUtil
-import io.legado.app.utils.applyTint
+import io.legado.app.utils.applyUiMenuStyle
 import io.legado.app.utils.cnCompare
 import io.legado.app.utils.externalFiles
 import io.legado.app.utils.getPrefString
@@ -79,24 +79,31 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
         binding.toolBar.setBackgroundColor(primaryColor)
         binding.toolBar.setTitle(R.string.select_font)
         binding.toolBar.inflateMenu(R.menu.font_select)
-        binding.toolBar.menu.applyTint(requireContext())
+        binding.toolBar.menu.applyUiMenuStyle(requireContext())
         binding.toolBar.setOnMenuItemClickListener(this)
         binding.recyclerView.layoutManager = LinearLayoutManager(context)
         binding.recyclerView.adapter = adapter
+        loadInitialFontFiles()
+    }
 
+    private fun loadInitialFontFiles() {
         val fontPath = getPrefString(PreferKey.fontFolder)
         if (fontPath.isNullOrEmpty()) {
-            openFolder()
+            loadLocalFontFiles()
         } else {
             if (fontPath.isContentScheme()) {
                 val doc = DocumentFile.fromTreeUri(requireContext(), Uri.parse(fontPath))
                 if (doc?.canRead() == true) {
                     loadFontFiles(FileDoc.fromDocumentFile(doc))
                 } else {
-                    openFolder()
+                    loadLocalFontFiles()
                 }
             } else {
-                loadFontFilesByPermission(fontPath)
+                if (File(fontPath).canRead()) {
+                    loadFontFiles(FileDoc.fromFile(File(fontPath)))
+                } else {
+                    loadLocalFontFiles()
+                }
             }
         }
     }
@@ -109,7 +116,9 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
                     items(
                         requireContext.resources.getStringArray(R.array.system_typefaces).toList()
                     ) { _, i ->
-                        AppConfig.systemTypefaces = i
+                        if (callBack?.applySystemTypefaceOnDefault != false) {
+                            AppConfig.systemTypefaces = i
+                        }
                         onDefaultFontChange()
                         dismissAllowingStateLoss()
                     }
@@ -136,6 +145,12 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
         return File(path).listFileDocs {
             it.name.matches(fontRegex)
         }
+    }
+
+    private fun loadLocalFontFiles() {
+        adapter.setItems(getLocalFonts().sortedWith { o1, o2 ->
+            o1.name.cnCompare(o2.name)
+        })
     }
 
     private fun loadFontFilesByPermission(path: String) {
@@ -204,5 +219,7 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
     interface CallBack {
         fun selectFont(path: String)
         val curFontPath: String
+        val applySystemTypefaceOnDefault: Boolean
+            get() = true
     }
 }

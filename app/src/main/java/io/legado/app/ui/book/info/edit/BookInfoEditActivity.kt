@@ -2,8 +2,13 @@ package io.legado.app.ui.book.info.edit
 
 import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.viewModels
 import androidx.core.view.WindowInsetsCompat
 import io.legado.app.R
@@ -11,6 +16,7 @@ import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.databinding.ActivityBookInfoEditBinding
+import io.legado.app.help.book.BookTagHelper
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.addType
 import io.legado.app.help.book.isAudio
@@ -18,8 +24,10 @@ import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isVideo
 import io.legado.app.help.book.removeType
+import io.legado.app.lib.dialogs.alert
 import io.legado.app.ui.book.changecover.ChangeCoverDialog
 import io.legado.app.ui.file.HandleFileContract
+import io.legado.app.utils.dpToPx
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.externalFiles
@@ -95,6 +103,9 @@ class BookInfoEditActivity :
             viewModel.book?.customCoverUrl = tieCoverUrl.text?.toString()
             upCover()
         }
+        tvEditTags.setOnClickListener {
+            viewModel.book?.let { showTagEditDialog(it) }
+        }
     }
 
     private fun upView(book: Book) = binding.run {
@@ -110,7 +121,59 @@ class BookInfoEditActivity :
         )
         tieCoverUrl.setText(book.getDisplayCover())
         tieBookIntro.setText(book.getDisplayIntro())
+        upBookTags(book)
         upCover()
+    }
+
+    private fun upBookTags(book: Book) = binding.run {
+        val tags = BookTagHelper.parse(book.customTag)
+        tvBookTags.text = tags.joinToString(" · ").ifBlank {
+            getString(R.string.bookshelf_tag_none)
+        }
+    }
+
+    private fun showTagEditDialog(book: Book) {
+        viewModel.loadTagCandidates(book) { candidates ->
+            val currentTags = BookTagHelper.parse(book.customTag)
+            val allTags = (currentTags + candidates).distinct()
+            val checkBoxes = mutableListOf<Pair<String, CheckBox>>()
+            val container = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(16.dpToPx(), 4.dpToPx(), 16.dpToPx(), 0)
+            }
+            if (allTags.isEmpty()) {
+                container.addView(TextView(this).apply {
+                    setText(R.string.bookshelf_tag_none)
+                })
+            } else {
+                allTags.forEach { tag ->
+                    val checkBox = CheckBox(this).apply {
+                        text = tag
+                        isChecked = currentTags.any { it.equals(tag, ignoreCase = true) }
+                    }
+                    checkBoxes += tag to checkBox
+                    container.addView(checkBox)
+                }
+            }
+            val newTagEdit = EditText(this).apply {
+                hint = getString(R.string.bookshelf_tag_new_hint)
+                inputType = InputType.TYPE_CLASS_TEXT
+                setSingleLine(false)
+                minLines = 1
+            }
+            container.addView(newTagEdit)
+            alert(titleResource = R.string.bookshelf_tag_edit) {
+                customView { container }
+                okButton {
+                    val selected = checkBoxes
+                        .filter { it.second.isChecked }
+                        .map { it.first } + BookTagHelper.parse(newTagEdit.text?.toString())
+                    book.customTag = BookTagHelper.join(selected)
+                    upBookTags(book)
+                }
+                cancelButton()
+            }
+        }
     }
 
     private fun upCover() {

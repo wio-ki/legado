@@ -30,6 +30,18 @@ class SourceLoginJsExtensions(
     interface Callback {
         fun upUiData(data: Map<String, Any?>?)
         fun reUiView(deltaUp: Boolean = false)
+        fun showBrowser(
+            url: String,
+            html: String? = null,
+            preloadJs: String? = null,
+            config: String? = null
+        ): Boolean = false
+        fun open(
+            name: String,
+            url: String? = null,
+            title: String? = null,
+            origin: String? = null
+        ): Boolean = false
     }
 
     fun upLoginData(data: Map<String, Any?>?) {
@@ -43,6 +55,15 @@ class SourceLoginJsExtensions(
 
     fun refreshExplore() {
         callbackRef.get()?.reUiView()
+    }
+
+    override fun onOpen(
+        name: String,
+        url: String?,
+        title: String?,
+        origin: String?
+    ): Boolean {
+        return callbackRef.get()?.open(name, url, title, origin) == true
     }
 
     fun refreshBookInfo() {
@@ -78,16 +99,22 @@ class SourceLoginJsExtensions(
     fun showBrowser(url: String, html: String? = null, preloadJs: String? = null, config: String? = null) {
         val activity = activityRef.get() ?: return
         val source = getSource() ?: return
-        activity.showDialogFragment(
-            BottomWebViewDialog(
-                source.getKey(),
-                bookType,
-                url,
-                html,
-                preloadJs,
-                config
+        if (callbackRef.get()?.showBrowser(url, html, preloadJs, config) == true) {
+            return
+        }
+        activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            activity.showDialogFragment(
+                BottomWebViewDialog(
+                    source.getKey(),
+                    bookType,
+                    url,
+                    html,
+                    preloadJs,
+                    config
+                )
             )
-        )
+        }
     }
 
 }

@@ -3,9 +3,11 @@ package io.legado.app.ui.dict
 import android.os.Build
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.textclassifier.TextClassifier
+import android.widget.TextView
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.bumptech.glide.Glide
@@ -17,8 +19,12 @@ import io.legado.app.data.entities.DictRule
 import io.legado.app.databinding.DialogDictBinding
 import io.legado.app.help.GlideImageGetter
 import io.legado.app.help.TextViewTagHandler
+import io.legado.app.lib.theme.UiCorner
 import io.legado.app.lib.theme.accentColor
+import io.legado.app.lib.theme.applyUiMenuItemTypeface
+import io.legado.app.lib.theme.applyUiTabTypeface
 import io.legado.app.lib.theme.backgroundColor
+import io.legado.app.lib.theme.secondaryTextColor
 import io.legado.app.ui.widget.dialog.PhotoDialog
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.setHtml
@@ -84,9 +90,11 @@ class DictDialog() : BaseDialogFragment(R.layout.dialog_dict) {
             }
 
             override fun onTabUnselected(tab: TabLayout.Tab) {
+                updateDictTabs()
             }
 
             override fun onTabSelected(tab: TabLayout.Tab) {
+                updateDictTabs()
                 val dictRule = tab.tag as DictRule
                 binding.rotateLoading.visible()
                 viewModel.dict(dictRule, word!!) {
@@ -153,11 +161,43 @@ class DictDialog() : BaseDialogFragment(R.layout.dialog_dict) {
         viewModel.initData {
             it.forEach { d  ->
                 binding.tabLayout.addTab(binding.tabLayout.newTab().apply {
-                    text = d.name
+                    customView = createDictTabView(d.name, false)
                     tag = d
                 })
             }
             setupTabLayoutMode(it.size)
+            binding.tabLayout.applyUiTabTypeface(requireContext())
+            updateDictTabs()
+        }
+    }
+
+    private fun createDictTabView(name: String, selected: Boolean): TextView {
+        return TextView(requireContext()).apply {
+            text = name
+            gravity = Gravity.CENTER
+            maxLines = 1
+            includeFontPadding = false
+            isSelected = selected
+            setTextColor(if (selected) accentColor else secondaryTextColor)
+            textSize = 14f
+            applyUiMenuItemTypeface(requireContext())
+            setPadding(14.dpToPx(), 8.dpToPx(), 14.dpToPx(), 8.dpToPx())
+            background = UiCorner.actionSelector(
+                android.graphics.Color.TRANSPARENT,
+                backgroundColor,
+                UiCorner.actionRadius(requireContext())
+            )
+        }
+    }
+
+    private fun updateDictTabs() {
+        for (index in 0 until binding.tabLayout.tabCount) {
+            val tab = binding.tabLayout.getTabAt(index) ?: continue
+            val selected = tab.isSelected
+            (tab.customView as? TextView)?.run {
+                isSelected = selected
+                setTextColor(if (selected) accentColor else secondaryTextColor)
+            }
         }
     }
 

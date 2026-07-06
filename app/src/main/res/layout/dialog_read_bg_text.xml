@@ -62,6 +62,14 @@
         android:text="@string/dark_status_icon"
         tools:ignore="TouchTargetSizeCheck" />
 
+    <io.legado.app.lib.theme.view.ThemeSwitch
+        android:id="@+id/sw_scroll_follow_bg"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="6dp"
+        android:text="@string/read_scroll_follow_background"
+        tools:ignore="TouchTargetSizeCheck" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -203,6 +211,15 @@
         android:max="100"
         android:padding="6dp"
         tools:ignore="UnusedAttribute" />
+
+    <io.legado.app.ui.widget.DetailSeekBar
+        android:id="@+id/dsb_text_shadow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="6dp"
+        app:max="100"
+        app:isBottomBackground="true"
+        app:title="@string/text_shadow" />
 
     <TextView
         android:id="@+id/tv_bg_image"

@@ -7,6 +7,9 @@ import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookGroup
+import io.legado.app.help.book.BookTagHelper
+import io.legado.app.help.config.AppConfig
 import io.legado.app.model.ReadBook
 
 class BookInfoEditViewModel(application: Application) : BaseViewModel(application) {
@@ -36,6 +39,25 @@ class BookInfoEditViewModel(application: Application) : BaseViewModel(applicatio
             } else {
                 AppLog.put("书籍信息保存失败\n$it", it, true)
             }
+        }
+    }
+
+    fun loadTagCandidates(book: Book, success: (List<String>) -> Unit) {
+        execute {
+            val configured = AppConfig.bookshelfGroupTags
+                .filterKeys { groupId ->
+                    groupId == BookGroup.IdAll || book.group and groupId != 0L
+                }
+                .values
+                .flatten()
+            val existing = appDb.bookDao.all
+                .filter { it.group and book.group != 0L || it.bookUrl == book.bookUrl }
+                .flatMap { BookTagHelper.parse(it.customTag) }
+            (configured + existing)
+                .distinct()
+                .sorted()
+        }.onSuccess {
+            success(it)
         }
     }
 }

@@ -11,9 +11,11 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
+import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.CacheManifestHelper
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalModified
 import io.legado.app.help.book.removeType
@@ -120,6 +122,8 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
         val bookSource = ReadManga.bookSource ?: return true
         val oldBook = book.copy()
         WebBook.getChapterListAwait(bookSource, book, true).onSuccess { cList ->
+            val oldChapterList = appDb.bookChapterDao.getChapterList(oldBook.bookUrl)
+            BookHelp.remapContentCache(oldBook, oldChapterList, cList)
             if (oldBook.bookUrl == book.bookUrl) {
                 appDb.bookDao.update(book)
             } else {
@@ -128,6 +132,7 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
             }
             appDb.bookChapterDao.delByBook(oldBook.bookUrl)
             appDb.bookChapterDao.insert(*cList.toTypedArray())
+            CacheManifestHelper.refreshAsync(book, cList)
             ReadManga.onChapterListUpdated(book)
             return true
         }.onFailure {
@@ -216,18 +221,18 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
             AppLog.put("拉取阅读进度失败《${book.name}》\n${it.localizedMessage}", it)
         }.onSuccess { progress ->
             progress ?: return@onSuccess
-            if (progress.durChapterIndex == book.durChapterIndex && progress.durChapterPos == book.durChapterPos) {
-                return@onSuccess
-            }
-            if (progress.durChapterIndex < book.durChapterIndex ||
-                (progress.durChapterIndex == book.durChapterIndex
-                        && progress.durChapterPos < book.durChapterPos)
-            ) {
-                alertSync?.invoke(progress)
-            } else if (progress.durChapterIndex < book.simulatedTotalChapterNum()) {
-                ReadManga.setProgress(progress)
-                AppLog.put("自动同步阅读进度成功《${book.name}》 ${progress.durChapterTitle}")
-                context.toastOnUi("已同步最新漫画阅读进度")
+            when (progress.compareWith(book)) {
+                BookProgressComparison.LOCAL_NEWER -> {
+                    alertSync?.invoke(progress)
+                }
+                BookProgressComparison.REMOTE_NEWER -> {
+                    if (progress.durChapterIndex < book.simulatedTotalChapterNum()) {
+                        ReadManga.setProgress(progress)
+                        AppLog.put("自动同步阅读进度成功《${book.name}》 ${progress.durChapterTitle}")
+                        context.toastOnUi("已同步最新漫画阅读进度")
+                    }
+                }
+                BookProgressComparison.SAME -> Unit
             }
         }
     }
@@ -244,6 +249,7 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
             ReadManga.book?.delete()
             appDb.bookDao.insert(book)
             appDb.bookChapterDao.insert(*toc.toTypedArray())
+            CacheManifestHelper.refreshAsync(book, toc)
             ReadManga.resetData(book)
             ReadManga.loadContent()
         }.onError {

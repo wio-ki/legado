@@ -3,6 +3,7 @@ package io.legado.app.ui.widget.image
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Typeface
@@ -14,15 +15,19 @@ import android.view.ViewGroup
 import androidx.appcompat.widget.AppCompatImageView
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
+import com.bumptech.glide.load.DecodeFormat
+import com.bumptech.glide.Priority
 import com.bumptech.glide.load.DataSource
 import com.bumptech.glide.load.engine.GlideException
 import com.bumptech.glide.request.RequestListener
 import com.bumptech.glide.request.RequestOptions
 import com.bumptech.glide.request.target.Target
 import io.legado.app.constant.AppPattern
+import io.legado.app.help.CoverThumbnailCache
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.storage.Restore
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.model.BookCover
 import io.legado.app.utils.textHeight
@@ -41,6 +46,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import splitties.init.appCtx
 
@@ -62,12 +68,18 @@ class CoverImageView @JvmOverloads constructor(
     private val triggerChannel = Channel<Unit>(Channel.CONFLATED)
     var bitmapPath: String? = null
         private set
+    private var loadKey: String? = null
+    private var loadedKey: String? = null
     private var name: String? = null
     private var author: String? = null
     private var nameHeight = 0f
     private var authorHeight = 0f
     private val drawBookName = BookCover.drawBookName
     private val drawBookAuthor by lazy { BookCover.drawBookAuthor }
+
+    init {
+        setBackgroundColor(Color.TRANSPARENT)
+    }
 
     override fun setLayoutParams(params: ViewGroup.LayoutParams?) {
         if (params != null) {
@@ -133,19 +145,13 @@ class CoverImageView @JvmOverloads constructor(
                     }
                     ensureActive()
                 }
-                if (width == 0) {
-                    var attempts = 0
-                    do {
-                        delay(1L)
-                        attempts++
-                    } while (width == 0 && attempts < 2000)
-                }
+                val (bitmapWidth, bitmapHeight) = awaitCoverSize() ?: return@launch
                 ensureActive()
-                val bitmap = generateCoverBitmap(name, author)
+                val bitmap = generateCoverBitmap(name, author, bitmapWidth, bitmapHeight)
                 ensureActive()
                 needNameBitmap.put(bitmapPath.toString(), true)
-                nameBitmapCache.put(pathName + width, bitmap)
-                invalidate()
+                nameBitmapCache.put(pathName + bitmapWidth, bitmap)
+                postInvalidate()
             } catch (_: CancellationException) {
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -153,7 +159,20 @@ class CoverImageView @JvmOverloads constructor(
         }
     }
 
-    private fun generateCoverBitmap(name: String?, author: String?): Bitmap {
+    private suspend fun awaitCoverSize(): Pair<Int, Int>? {
+        repeat(2000) {
+            val size = withContext(Dispatchers.Main.immediate) {
+                width to height
+            }
+            if (size.first > 0 && size.second > 0) {
+                return size
+            }
+            delay(1L)
+        }
+        return null
+    }
+
+    private fun generateCoverBitmap(name: String?, author: String?, width: Int, height: Int): Bitmap {
         viewWidth = width.toFloat()
         viewHeight = height.toFloat()
         val bitmap = createBitmap(width, height)
@@ -242,6 +261,7 @@ class CoverImageView @JvmOverloads constructor(
             ): Boolean {
                 triggerChannel.trySend(Unit)
                 needNameBitmap.put(bitmapPath.toString(), true)
+                loadedKey = null
                 return false
             }
 
@@ -255,6 +275,7 @@ class CoverImageView @JvmOverloads constructor(
                 currentJob?.cancel()
                 currentJob = null
                 needNameBitmap.remove(bitmapPath.toString())
+                loadedKey = loadKey
                 invalidate()
                 return false
             }
@@ -281,6 +302,25 @@ class CoverImageView @JvmOverloads constructor(
        load(book.getDisplayCover(), book.name, book.author, loadOnlyWifi, book.origin, fragment, lifecycle, onLoadFinish)
     }
 
+    fun loadThumb(
+        book: Book,
+        loadOnlyWifi: Boolean = false,
+        fragment: Fragment? = null,
+        lifecycle: Lifecycle? = null
+    ) {
+        load(
+            book.getDisplayCover(),
+            book.name,
+            book.author,
+            loadOnlyWifi,
+            book.origin,
+            fragment,
+            lifecycle,
+            null,
+            true
+        )
+    }
+
     fun load(
         path: String? = null,
         name: String? = null,
@@ -289,16 +329,34 @@ class CoverImageView @JvmOverloads constructor(
         sourceOrigin: String? = null,
         fragment: Fragment? = null,
         lifecycle: Lifecycle? = null,
-        onLoadFinish: (() -> Unit)? = null
+        onLoadFinish: (() -> Unit)? = null,
+        preferThumb: Boolean = false
     ) {
+        val normalizedPath = Restore.normalizeLocalCoverPath(path)
         val currentAuthor = author?.replace(AppPattern.bdRegex, "")?.trim()?.also {
             this.author = it
         }
         val currentName = name?.replace(AppPattern.bdRegex, "")?.trim()?.also {
             this.name = it
         }
-        this.bitmapPath = path
+        val useThumb = preferThumb && !AppConfig.loadCoverHighQuality
+        val newLoadKey = listOf(
+            normalizedPath.orEmpty(),
+            currentName.orEmpty(),
+            currentAuthor.orEmpty(),
+            sourceOrigin.orEmpty(),
+            loadOnlyWifi.toString(),
+            AppConfig.useDefaultCover.toString(),
+            useThumb.toString()
+        ).joinToString("|")
+        if (loadedKey == newLoadKey && drawable != null) {
+            return
+        }
+        loadKey = newLoadKey
+        this.bitmapPath = normalizedPath
+        val thumbKey = "$sourceOrigin|$normalizedPath|$currentName|$currentAuthor"
         if (AppConfig.useDefaultCover) {
+            loadedKey = newLoadKey
             ImageLoader.load(context, BookCover.defaultDrawable)
                 .centerCrop()
                 .into(this)
@@ -311,17 +369,29 @@ class CoverImageView @JvmOverloads constructor(
                 }
                 drawNameAuthor(pathName, currentName, currentAuthor, true)
             }
-            var options = RequestOptions().set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+            var options = RequestOptions()
+                .format(DecodeFormat.PREFER_ARGB_8888)
+                .disallowHardwareConfig()
+                .set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+                .set(
+                    OkHttpModelLoader.stableCoverCacheKeyOption,
+                    stableCoverCacheKey(normalizedPath, currentName, currentAuthor, sourceOrigin)
+                )
             if (sourceOrigin != null) {
                 options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
             }
-            var builder = if (fragment != null && lifecycle != null) {
-                ImageLoader.load(fragment, lifecycle, path)
+            val thumbFile = if (useThumb) CoverThumbnailCache.existing(context, thumbKey) else null
+            var builder = if (thumbFile != null) {
+                ImageLoader.load(context, thumbFile)
+            } else if (fragment != null && lifecycle != null) {
+                ImageLoader.load(fragment, lifecycle, normalizedPath)
             } else {
-                ImageLoader.load(context, path)//Glide自动识别http://,content://和file://
+                ImageLoader.load(context, normalizedPath)//Glide自动识别http://,content://和file://
             }
             builder = builder.apply(options)
-                .placeholder(BookCover.defaultDrawable)
+                .let {
+                    if (thumbFile == null) it.placeholder(BookCover.defaultDrawable) else it
+                }
                 .error(BookCover.defaultDrawable)
                 .listener(glideListener)
             if (onLoadFinish != null) {
@@ -349,9 +419,53 @@ class CoverImageView @JvmOverloads constructor(
                 })
             }
             builder
+                .priority(Priority.HIGH)
+                .override(if (useThumb) 240 else Target.SIZE_ORIGINAL, if (useThumb) 320 else Target.SIZE_ORIGINAL)
                 .centerCrop()
+                .addListener(object : RequestListener<Drawable> {
+                    override fun onLoadFailed(
+                        e: GlideException?,
+                        model: Any?,
+                        target: Target<Drawable?>,
+                        isFirstResource: Boolean
+                    ): Boolean {
+                        return false
+                    }
+
+                    override fun onResourceReady(
+                        resource: Drawable,
+                        model: Any,
+                        target: Target<Drawable>?,
+                        dataSource: DataSource,
+                        isFirstResource: Boolean
+                    ): Boolean {
+                        if (useThumb && thumbFile == null) {
+                            CoverThumbnailCache.saveAsync(context, thumbKey, resource)
+                        }
+                        return false
+                    }
+                })
                 .into(this)
         }
+    }
+
+    private fun stableCoverCacheKey(
+        path: String?,
+        name: String?,
+        author: String?,
+        sourceOrigin: String?
+    ): String {
+        val stablePath = path
+            ?.substringBefore('#')
+            ?.substringBefore('?')
+            .orEmpty()
+        return listOf(
+            "cover",
+            sourceOrigin.orEmpty(),
+            name.orEmpty(),
+            author.orEmpty(),
+            stablePath
+        ).joinToString("|")
     }
 
     override fun onDetachedFromWindow() {

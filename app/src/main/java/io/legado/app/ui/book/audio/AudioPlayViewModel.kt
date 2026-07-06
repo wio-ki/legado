@@ -11,10 +11,17 @@ import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookProgress
+import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
+import io.legado.app.help.AppWebDav
+import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.CacheManifestHelper
 import io.legado.app.help.book.getBookSource
 import io.legado.app.help.book.removeType
 import io.legado.app.help.book.simulatedTotalChapterNum
+import io.legado.app.help.book.update
+import io.legado.app.help.config.AppConfig
 import io.legado.app.model.AudioPlay
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.postEvent
@@ -57,6 +64,28 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
         if (AudioPlay.chapterSize == 0 && !loadChapterList(book)) {
             return
         }
+        if (AudioPlay.inBookshelf) {
+            syncBookProgress(book)
+        }
+    }
+
+    private suspend fun syncBookProgress(book: Book) {
+        if (!AppConfig.syncBookProgress) return
+        try {
+            val progress = AppWebDav.getBookProgress(book) ?: return
+            when (progress.compareWith(book)) {
+                BookProgressComparison.LOCAL_NEWER -> {
+                    AppWebDav.uploadBookProgress(BookProgress(book))
+                    book.update()
+                }
+                BookProgressComparison.REMOTE_NEWER -> {
+                    AudioPlay.setProgress(progress)
+                }
+                BookProgressComparison.SAME -> Unit
+            }
+        } catch (e: Exception) {
+            AppLog.put("拉取听书进度失败《${book.name}》\n${e.localizedMessage}", e)
+        }
     }
 
     private suspend fun loadBookInfo(book: Book): Boolean {
@@ -75,13 +104,17 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
         try {
             val oldBook = book.copy()
             val cList = WebBook.getChapterListAwait(bookSource, book).getOrThrow()
+            val oldChapterList = appDb.bookChapterDao.getChapterList(oldBook.bookUrl)
+            BookHelp.remapContentCache(oldBook, oldChapterList, cList)
             if (oldBook.bookUrl == book.bookUrl) {
                 appDb.bookDao.update(book)
             } else {
                 appDb.bookDao.replace(oldBook, book)
+                BookHelp.updateCacheFolder(oldBook, book)
             }
-            appDb.bookChapterDao.delByBook(book.bookUrl)
+            appDb.bookChapterDao.delByBook(oldBook.bookUrl)
             appDb.bookChapterDao.insert(*cList.toTypedArray())
+            CacheManifestHelper.refreshAsync(book, cList)
             AudioPlay.chapterSize = cList.size
             AudioPlay.simulatedChapterSize = book.simulatedTotalChapterNum()
             AudioPlay.upDurChapter()
@@ -110,6 +143,7 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
             AudioPlay.book = book
             AudioPlay.bookSource = source
             appDb.bookChapterDao.insert(*toc.toTypedArray())
+            CacheManifestHelper.refreshAsync(book, toc)
             AudioPlay.upDurChapter()
         }.onFinally {
             postEvent(EventBus.SOURCE_CHANGED, book.bookUrl)

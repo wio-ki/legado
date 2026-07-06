@@ -5,6 +5,7 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import androidx.annotation.Keep
 import androidx.core.graphics.toColorInt
+import androidx.core.net.toUri
 import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.PageAnim
@@ -26,6 +27,7 @@ import io.legado.app.utils.getMeanColor
 import io.legado.app.utils.getPrefBoolean
 import io.legado.app.utils.getPrefInt
 import io.legado.app.utils.hexString
+import io.legado.app.utils.isContentScheme
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.putPrefBoolean
 import io.legado.app.utils.putPrefInt
@@ -42,20 +44,43 @@ import androidx.core.graphics.drawable.toDrawable
 object ReadBookConfig {
     const val configFileName = "readConfig.json"
     const val shareConfigFileName = "shareReadConfig.json"
+    private const val activeReadConfigFileName = "activeReadConfig.json"
+    private const val activeComicConfigFileName = "activeComicConfig.json"
     val configFilePath = FileUtils.getPath(appCtx.filesDir, configFileName)
     val shareConfigFilePath = FileUtils.getPath(appCtx.filesDir, shareConfigFileName)
+    private val activeReadConfigFilePath = FileUtils.getPath(appCtx.filesDir, activeReadConfigFileName)
+    private val activeComicConfigFilePath = FileUtils.getPath(appCtx.filesDir, activeComicConfigFileName)
     val configList: ArrayList<Config> = arrayListOf()
     lateinit var shareConfig: Config
-    var durConfig
-        get() = getConfig(styleSelect)
+    private var activeConfig: Config? = null
         set(value) {
-            configList[styleSelect] = value
+            if (value?.sanitize() == true) {
+                needSaveSanitizedConfig = true
+            }
+            field = value
+        }
+    private var needSaveConfigList = false
+    private var needSaveSanitizedConfig = false
+    var durConfig
+        get() = activeConfig ?: (loadActiveConfig(styleSelect) ?: getConfig(styleSelect).copy()).also {
+            activeConfig = it
+        }
+        set(value) {
+            activeConfig = value
             if (shareLayout) {
                 shareConfig = value
             }
         }
 
     var isComic: Boolean = false
+        set(value) {
+            if (field != value) {
+                field = value
+                resetActiveConfig()
+            } else {
+                field = value
+            }
+        }
     var bg: Drawable? = null
     var bgMeanColor: Int = 0
     val textColor: Int get() = durConfig.curTextColor()
@@ -69,10 +94,61 @@ object ReadBookConfig {
 
     @Synchronized
     fun getConfig(index: Int): Config {
-        if (configList.size < 5) {
-            resetAll()
+        val normalizedIndex = normalizeStyleIndex(index)
+        return if (isBuiltInStyleIndex(normalizedIndex)) {
+            DefaultData.readConfigs[normalizedIndex]
+        } else {
+            configList[customIndex(normalizedIndex)]
         }
-        return configList.getOrNull(index) ?: configList[0]
+    }
+
+    val builtInStyleCount: Int
+        get() = DefaultData.readConfigs.size
+
+    val customStyleStartIndex: Int
+        get() = builtInStyleCount
+
+    val styleCount: Int
+        get() = builtInStyleCount + configList.size
+
+    fun customIndex(globalIndex: Int): Int {
+        return globalIndex - customStyleStartIndex
+    }
+
+    fun customGlobalIndex(customIndex: Int): Int {
+        return customStyleStartIndex + customIndex
+    }
+
+    fun isBuiltInStyleIndex(index: Int): Boolean {
+        return index in 0 until builtInStyleCount
+    }
+
+    fun isCustomStyleIndex(index: Int): Boolean {
+        return customIndex(index) in configList.indices
+    }
+
+    fun isValidStyleIndex(index: Int): Boolean {
+        return isBuiltInStyleIndex(index) || isCustomStyleIndex(index)
+    }
+
+    fun normalizeStyleIndex(index: Int): Int {
+        return when {
+            isValidStyleIndex(index) -> index
+            builtInStyleCount > 0 -> 0
+            configList.isNotEmpty() -> customGlobalIndex(0)
+            else -> 0
+        }
+    }
+
+    fun allStyleConfigs(): List<IndexedValue<Config>> {
+        val styles = arrayListOf<IndexedValue<Config>>()
+        DefaultData.readConfigs.forEachIndexed { index, config ->
+            styles.add(IndexedValue(index, config))
+        }
+        configList.forEachIndexed { index, config ->
+            styles.add(IndexedValue(customGlobalIndex(index), config))
+        }
+        return styles
     }
 
     fun initConfigs() {
@@ -86,10 +162,10 @@ object ReadBookConfig {
                 AppLog.put("读取排版配置文件出错", e)
             }
         }
-        (configs ?: DefaultData.readConfigs).let {
-            configList.clear()
-            configList.addAll(it)
-        }
+        val normalizedConfigs = normalizeCustomConfigs(configs)
+        configList.clear()
+        configList.addAll(normalizedConfigs)
+        activeConfig = loadActiveConfig(styleSelect)
     }
 
     fun initShareConfig() {
@@ -103,7 +179,92 @@ object ReadBookConfig {
                 e.printOnDebug()
             }
         }
-        shareConfig = c ?: configList.getOrNull(5) ?: Config()
+        shareConfig = c ?: getConfig(5).copy()
+        if (needSaveConfigList || needSaveSanitizedConfig) {
+            needSaveConfigList = false
+            needSaveSanitizedConfig = false
+            save()
+        }
+    }
+
+    fun repairConfigIfNeeded(): Boolean {
+        var changed = false
+        val normalizedReadStyle = normalizeStyleIndex(readStyleSelect)
+        if (readStyleSelect != normalizedReadStyle) {
+            readStyleSelect = normalizedReadStyle
+            changed = true
+        }
+        val normalizedComicStyle = normalizeStyleIndex(comicStyleSelect)
+        if (comicStyleSelect != normalizedComicStyle) {
+            comicStyleSelect = normalizedComicStyle
+            changed = true
+        }
+        if (changed) {
+            save()
+        }
+        return changed
+    }
+
+    private fun normalizeCustomConfigs(configs: List<Config>?): List<Config> {
+        if (configs == null) {
+            return emptyList()
+        }
+        val defaultConfigs = DefaultData.readConfigs
+        if (!isOldFormatConfigList(configs, defaultConfigs)) {
+            return configs.map { it.copy() }
+        }
+        val normalized = arrayListOf<Config>()
+        val names = defaultConfigs.map { it.name }.toHashSet()
+
+        if (configs.size > defaultConfigs.size) {
+            configs.drop(defaultConfigs.size).forEach { customConfig ->
+                val config = customConfig.copy()
+                config.name = uniqueCustomStyleName(config.name.ifBlank { "自定义" }, names)
+                normalized.add(config)
+                names.add(config.name)
+            }
+        }
+
+        defaultConfigs.forEachIndexed { index, defaultConfig ->
+            val savedConfig = configs.getOrNull(index) ?: return@forEachIndexed
+            if (GSON.toJson(savedConfig) != GSON.toJson(defaultConfig)) {
+                val customConfig = savedConfig.copy()
+                customConfig.name = uniqueCustomStyleName(
+                    customConfig.name.ifBlank { defaultConfig.name.ifBlank { "自定义" } },
+                    names
+                )
+                normalized.add(customConfig)
+                names.add(customConfig.name)
+            }
+        }
+
+        needSaveConfigList = true
+        return normalized
+    }
+
+    private fun isOldFormatConfigList(configs: List<Config>, defaultConfigs: List<Config>): Boolean {
+        if (configs.size < defaultConfigs.size) {
+            return false
+        }
+        return defaultConfigs.indices.any { index ->
+            val savedConfig = configs.getOrNull(index) ?: return@any false
+            savedConfig.name == defaultConfigs[index].name ||
+                GSON.toJson(savedConfig.copy(name = defaultConfigs[index].name)) ==
+                GSON.toJson(defaultConfigs[index])
+        }
+    }
+
+    private fun uniqueCustomStyleName(baseName: String, names: Set<String>): String {
+        if (!names.contains(baseName)) {
+            return baseName
+        }
+        var index = 1
+        var name = "$baseName($index)"
+        while (names.contains(name)) {
+            index++
+            name = "$baseName($index)"
+        }
+        return name
     }
 
     fun upBg(width: Int, height: Int) {
@@ -123,6 +284,8 @@ object ReadBookConfig {
     }
 
     fun save() {
+        val activeConfigFilePath = if (isComic) activeComicConfigFilePath else activeReadConfigFilePath
+        val activeConfigState = ActiveConfigState(styleSelect, durConfig.copy())
         Coroutine.async {
             synchronized(this) {
                 GSON.toJson(configList).let {
@@ -132,6 +295,10 @@ object ReadBookConfig {
                 GSON.toJson(shareConfig).let {
                     FileUtils.delete(shareConfigFilePath)
                     FileUtils.createFileIfNotExist(shareConfigFilePath).writeText(it)
+                }
+                GSON.toJson(activeConfigState).let {
+                    FileUtils.delete(activeConfigFilePath)
+                    FileUtils.createFileIfNotExist(activeConfigFilePath).writeText(it)
                 }
             }
         }
@@ -154,23 +321,59 @@ object ReadBookConfig {
     }
 
     fun deleteDur(): Boolean {
-        if (configList.size > 5) {
-            val removeIndex = styleSelect
-            configList.removeAt(removeIndex)
-            if (removeIndex <= readStyleSelect) {
-                readStyleSelect -= 1
-            }
-            if (removeIndex <= comicStyleSelect) {
-                comicStyleSelect -= 1
-            }
-            return true
+        return deleteAt(styleSelect)
+    }
+
+    fun deleteAt(index: Int): Boolean {
+        if (!isCustomStyleIndex(index)) {
+            return false
         }
-        return false
+        val customIndex = customIndex(index)
+        val deleteCurrent = index == styleSelect
+        configList.removeAt(customIndex)
+        if (index < readStyleSelect) {
+            readStyleSelect -= 1
+        } else if (index == readStyleSelect) {
+            readStyleSelect = normalizeStyleIndex(0)
+        }
+        if (index < comicStyleSelect) {
+            comicStyleSelect -= 1
+        } else if (index == comicStyleSelect) {
+            comicStyleSelect = normalizeStyleIndex(0)
+        }
+        readStyleSelect = normalizeStyleIndex(readStyleSelect)
+        comicStyleSelect = normalizeStyleIndex(comicStyleSelect)
+        if (deleteCurrent) {
+            resetActiveConfig()
+        }
+        return true
+    }
+
+    fun resetActiveConfig() {
+        activeConfig = loadActiveConfig(styleSelect) ?: getConfig(styleSelect).copy()
+        if (shareLayout) {
+            shareConfig = activeConfig ?: shareConfig
+        }
+    }
+
+    fun setActiveConfig(config: Config, selectedIndex: Int = styleSelect) {
+        styleSelect = selectedIndex
+        activeConfig = config
+        if (shareLayout) {
+            shareConfig = config
+        }
     }
 
     fun clearBgAndCache() {
         val bgs = hashSetOf<String>()
         configList.forEach { config ->
+            repeat(3) {
+                config.getBgPath(it)?.let { path ->
+                    bgs.add(path)
+                }
+            }
+        }
+        activeConfig?.let { config ->
             repeat(3) {
                 config.getBgPath(it)?.let { path ->
                     bgs.add(path)
@@ -188,10 +391,30 @@ object ReadBookConfig {
     }
 
     private fun resetAll() {
-        DefaultData.readConfigs.let {
-            configList.clear()
-            configList.addAll(it)
-            save()
+        configList.clear()
+        activeConfig = null
+        readStyleSelect = normalizeStyleIndex(readStyleSelect)
+        comicStyleSelect = normalizeStyleIndex(comicStyleSelect)
+        FileUtils.delete(activeReadConfigFilePath)
+        FileUtils.delete(activeComicConfigFilePath)
+        save()
+    }
+
+    private fun loadActiveConfig(selectedIndex: Int): Config? {
+        val activeConfigFilePath = if (isComic) activeComicConfigFilePath else activeReadConfigFilePath
+        val configFile = File(activeConfigFilePath)
+        if (!configFile.exists()) {
+            return null
+        }
+        return try {
+            val state = GSON.fromJsonObject<ActiveConfigState>(configFile.readText()).getOrThrow()
+            if (state.styleIndex != normalizeStyleIndex(selectedIndex)) {
+                return null
+            }
+            state.config
+        } catch (e: Exception) {
+            AppLog.put("读取当前排版配置出错", e)
+            null
         }
     }
 
@@ -202,14 +425,21 @@ object ReadBookConfig {
             field = value
             appCtx.putPrefInt(PreferKey.autoReadSpeed, value)
         }
-    var styleSelect: Int
-        get() = if (isComic) comicStyleSelect else readStyleSelect
+    var autoReadMode = appCtx.getPrefInt(PreferKey.autoReadMode, AUTO_READ_MODE_SCROLL)
         set(value) {
+            field = value
+            appCtx.putPrefInt(PreferKey.autoReadMode, value)
+        }
+    var styleSelect: Int
+        get() = normalizeStyleIndex(if (isComic) comicStyleSelect else readStyleSelect)
+        set(value) {
+            val normalizedValue = normalizeStyleIndex(value)
             if (isComic) {
-                comicStyleSelect = value
+                comicStyleSelect = normalizedValue
             } else {
-                readStyleSelect = value
+                readStyleSelect = normalizedValue
             }
+            resetActiveConfig()
         }
     var readStyleSelect = appCtx.getPrefInt(PreferKey.readStyleSelect)
         set(value) {
@@ -225,12 +455,16 @@ object ReadBookConfig {
                 appCtx.putPrefInt(PreferKey.comicStyleSelect, value)
             }
         }
-    var shareLayout = appCtx.getPrefBoolean(PreferKey.shareLayout)
+    // var shareLayout = appCtx.getPrefBoolean(PreferKey.shareLayout)
+    //     set(value) {
+    //         field = value
+    //         if (appCtx.getPrefBoolean(PreferKey.shareLayout) != value) {
+    //             appCtx.putPrefBoolean(PreferKey.shareLayout, value)
+    //         }
+    //     }
+    var shareLayout = false
         set(value) {
-            field = value
-            if (appCtx.getPrefBoolean(PreferKey.shareLayout) != value) {
-                appCtx.putPrefBoolean(PreferKey.shareLayout, value)
-            }
+            field = false
         }
 
     /**
@@ -260,6 +494,9 @@ object ReadBookConfig {
         set(@PageAnim.Anim value) {
             config.setCurPageAnim(value)
         }
+
+    const val AUTO_READ_MODE_SCROLL = 0
+    const val AUTO_READ_MODE_TIMED = 1
 
     var textFont: String
         get() = config.textFont
@@ -295,6 +532,13 @@ object ReadBookConfig {
         get() = config.paragraphSpacing
         set(value) {
             config.paragraphSpacing = value
+        }
+
+    var paperInkStrength: Int
+        get() = config.curPaperInkStrength()
+        set(value) {
+            config.paperInkStrength = value.coerceIn(0, 100)
+            config.paperEffect = false
         }
 
     /**
@@ -433,6 +677,8 @@ object ReadBookConfig {
             exportConfig.letterSpacing = shareConfig.letterSpacing
             exportConfig.lineSpacingExtra = shareConfig.lineSpacingExtra
             exportConfig.paragraphSpacing = shareConfig.paragraphSpacing
+            exportConfig.paperEffect = shareConfig.paperEffect
+            exportConfig.paperInkStrength = shareConfig.paperInkStrength
             exportConfig.titleMode = shareConfig.titleMode
             exportConfig.titleSize = shareConfig.titleSize
             exportConfig.titleTopSpacing = shareConfig.titleTopSpacing
@@ -499,8 +745,6 @@ object ReadBookConfig {
                 }
             }
             config.bgStr = bgPath
-        } else if (config.bgType == 0) {
-            config.bgStr.toColorInt()
         }
         if (config.bgTypeNight == 2) {
             val bgName = FileUtils.getName(config.bgStrNight)
@@ -513,8 +757,6 @@ object ReadBookConfig {
                 }
             }
             config.bgStrNight = bgPath
-        } else if (config.bgTypeNight == 0) {
-            config.bgStrNight.toColorInt()
         }
         if (config.bgTypeEInk == 2) {
             val bgName = FileUtils.getName(config.bgStrEInk)
@@ -527,13 +769,17 @@ object ReadBookConfig {
                 }
             }
             config.bgStrEInk = bgPath
-        } else if (config.bgTypeEInk == 0) {
-            config.bgStrEInk.toColorInt()
         }
         config.curTextColor()
         config.curTextAccentColor()
         return config
     }
+
+    @Keep
+    data class ActiveConfigState(
+        val styleIndex: Int = 0,
+        val config: Config = Config()
+    )
 
     @Keep
     data class Config(
@@ -554,6 +800,13 @@ object ReadBookConfig {
         private var textAccentColor: String = "#E53935",//白天强调文字颜色
         private var textAccentColorNight: String = "#FE4D55",//夜间强调文字颜色
         private var textAccentColorEInk: String = "#000000",
+        private var readMenuBgColor: String? = "",
+        private var readMenuBgColorNight: String? = "",
+        private var readMenuBgColorEInk: String? = "",
+        var readMenuAlpha: Int = 100,
+        private var readScrollFollowBackground: Boolean = false,
+        private var readScrollFollowBackgroundNight: Boolean = false,
+        private var readScrollFollowBackgroundEInk: Boolean = false,
         private var pageAnim: Int = 0,//翻页动画
         private var pageAnimEInk: Int = 4,
         var textFont: String = "",//字体
@@ -562,6 +815,8 @@ object ReadBookConfig {
         var letterSpacing: Float = 0.1f,//字间距
         var lineSpacingExtra: Int = 12,//行间距
         var paragraphSpacing: Int = 2,//段距
+        var paperEffect: Boolean = false,//纸质化
+        var paperInkStrength: Int = 0,//纸墨融合强度
         var titleMode: Int = 0,//标题位置 0:居左 1:居中 2:隐藏
         var titleSize: Int = 0,
         var titleTopSpacing: Int = 0,
@@ -594,6 +849,128 @@ object ReadBookConfig {
         var footerMode: Int = 0
     ) {
 
+        fun sanitize(): Boolean {
+            var changed = false
+
+            fun updateInt(current: Int, value: Int, setValue: (Int) -> Unit) {
+                if (current != value) {
+                    setValue(value)
+                    changed = true
+                }
+            }
+
+            fun updateFloat(current: Float, value: Float, setValue: (Float) -> Unit) {
+                if (current != value) {
+                    setValue(value)
+                    changed = true
+                }
+            }
+
+            fun normalizeBgPath(
+                bgType: Int,
+                bgStr: String,
+                defaultBg: String,
+                setType: (Int) -> Unit,
+                setValue: (String) -> Unit
+            ) {
+                if (bgType != 2) {
+                    return
+                }
+                val localPath = FileUtils.getPath(appCtx.externalFiles, "bg", FileUtils.getName(bgStr))
+                val normalizedPath = when {
+                    FileUtils.exist(localPath) -> localPath
+                    !bgStr.contains(File.separator) && FileUtils.exist(bgStr) -> bgStr
+                    else -> null
+                }
+                if (normalizedPath == null) {
+                    setType(0)
+                    setValue(defaultBg)
+                    changed = true
+                    return
+                }
+                if (bgStr != normalizedPath) {
+                    setValue(normalizedPath)
+                    changed = true
+                }
+            }
+
+            fun normalizeFontPath() {
+                if (textFont.isBlank()) {
+                    return
+                }
+                if (textFont.isContentScheme()) {
+                    val canRead = runCatching {
+                        appCtx.contentResolver.openFileDescriptor(textFont.toUri(), "r")?.use { true } == true
+                    }.getOrDefault(false)
+                    if (!canRead) {
+                        textFont = ""
+                        changed = true
+                    }
+                    return
+                }
+
+                val normalizedPath = if (textFont.contains(File.separator)) {
+                    textFont
+                } else {
+                    FileUtils.getPath(appCtx.externalFiles, "font", FileUtils.getName(textFont))
+                }
+                if (FileUtils.exist(normalizedPath)) {
+                    if (textFont != normalizedPath) {
+                        textFont = normalizedPath
+                        changed = true
+                    }
+                } else {
+                    textFont = ""
+                    changed = true
+                }
+            }
+
+            updateInt(bgAlpha, bgAlpha.coerceIn(0, 100)) { bgAlpha = it }
+            updateInt(bgType, bgType.coerceIn(0, 2)) { bgType = it }
+            updateInt(bgTypeNight, bgTypeNight.coerceIn(0, 2)) { bgTypeNight = it }
+            updateInt(bgTypeEInk, bgTypeEInk.coerceIn(0, 2)) { bgTypeEInk = it }
+            normalizeBgPath(bgType, bgStr, "#EEEEEE", { bgType = it }) { bgStr = it }
+            normalizeBgPath(bgTypeNight, bgStrNight, "#000000", { bgTypeNight = it }) { bgStrNight = it }
+            normalizeBgPath(bgTypeEInk, bgStrEInk, "#FFFFFF", { bgTypeEInk = it }) { bgStrEInk = it }
+            normalizeFontPath()
+            updateInt(readMenuAlpha, readMenuAlpha.coerceIn(35, 100)) { readMenuAlpha = it }
+            updateInt(pageAnim, pageAnim.coerceIn(PageAnim.coverPageAnim, PageAnim.linkedCoverPageAnim)) {
+                pageAnim = it
+            }
+            updateInt(pageAnimEInk, pageAnimEInk.coerceIn(PageAnim.coverPageAnim, PageAnim.linkedCoverPageAnim)) {
+                pageAnimEInk = it
+            }
+            updateInt(textBold, textBold.coerceIn(0, 2)) { textBold = it }
+            updateInt(textSize, textSize.coerceIn(5, 50)) { textSize = it }
+            updateFloat(letterSpacing, letterSpacing.coerceIn(-0.5f, 0.5f)) { letterSpacing = it }
+            updateInt(lineSpacingExtra, lineSpacingExtra.coerceIn(0, 20)) { lineSpacingExtra = it }
+            updateInt(paragraphSpacing, paragraphSpacing.coerceIn(0, 20)) { paragraphSpacing = it }
+            updateInt(paperInkStrength, paperInkStrength.coerceIn(0, 100)) { paperInkStrength = it }
+            updateInt(titleMode, titleMode.coerceIn(0, AdvancedTitleConfig.TITLE_MODE_ADVANCED)) {
+                titleMode = it
+            }
+            updateInt(titleSize, titleSize.coerceIn(0, 20)) { titleSize = it }
+            updateInt(titleTopSpacing, titleTopSpacing.coerceIn(0, 100)) { titleTopSpacing = it }
+            updateInt(titleBottomSpacing, titleBottomSpacing.coerceIn(0, 100)) { titleBottomSpacing = it }
+            updateInt(underlineMode, underlineMode.coerceAtLeast(0)) { underlineMode = it }
+            updateInt(paddingTop, paddingTop.coerceIn(0, 200)) { paddingTop = it }
+            updateInt(paddingBottom, paddingBottom.coerceIn(0, 100)) { paddingBottom = it }
+            updateInt(paddingLeft, paddingLeft.coerceIn(0, 100)) { paddingLeft = it }
+            updateInt(paddingRight, paddingRight.coerceIn(0, 100)) { paddingRight = it }
+            updateInt(headerPaddingTop, headerPaddingTop.coerceIn(0, 100)) { headerPaddingTop = it }
+            updateInt(headerPaddingBottom, headerPaddingBottom.coerceIn(0, 100)) { headerPaddingBottom = it }
+            updateInt(headerPaddingLeft, headerPaddingLeft.coerceIn(0, 100)) { headerPaddingLeft = it }
+            updateInt(headerPaddingRight, headerPaddingRight.coerceIn(0, 100)) { headerPaddingRight = it }
+            updateInt(footerPaddingTop, footerPaddingTop.coerceIn(0, 100)) { footerPaddingTop = it }
+            updateInt(footerPaddingBottom, footerPaddingBottom.coerceIn(0, 100)) { footerPaddingBottom = it }
+            updateInt(footerPaddingLeft, footerPaddingLeft.coerceIn(0, 100)) { footerPaddingLeft = it }
+            updateInt(footerPaddingRight, footerPaddingRight.coerceIn(0, 100)) { footerPaddingRight = it }
+            updateInt(headerMode, headerMode.coerceIn(0, 2)) { headerMode = it }
+            updateInt(footerMode, footerMode.coerceIn(0, 1)) { footerMode = it }
+
+            return changed
+        }
+
         @Transient
         private var textColorIntEInk = -1
 
@@ -607,9 +984,9 @@ object ReadBookConfig {
         private var initColorInt = false
 
         private fun initColorInt() {
-            textColorIntEInk = textColorEInk.toColorInt()
-            textColorIntNight = textColorNight.toColorInt()
-            textColorInt = textColor.toColorInt()
+            textColorIntEInk = colorOrDefault(textColorEInk, "#000000")
+            textColorIntNight = colorOrDefault(textColorNight, "#ADADAD")
+            textColorInt = colorOrDefault(textColor, "#3E3D3B")
             initColorInt = true
         }
 
@@ -626,10 +1003,35 @@ object ReadBookConfig {
         private var initAccentColorInt = false
 
         private fun initAccentColorInt() {
-            textAccentColorIntEInk = textAccentColorEInk.toColorInt()
-            textAccentColorIntNight = textAccentColorNight.toColorInt()
-            textAccentColorInt = textAccentColor.toColorInt()
+            textAccentColorIntEInk = colorOrDefault(textAccentColorEInk, "#000000")
+            textAccentColorIntNight = colorOrDefault(textAccentColorNight, "#FE4D55")
+            textAccentColorInt = colorOrDefault(textAccentColor, "#E53935")
             initAccentColorInt = true
+        }
+
+        fun setCurReadMenuBgColor(color: Int) {
+            when {
+                AppConfig.isEInkMode -> readMenuBgColorEInk = "#${color.hexString}"
+                AppConfig.isNightTheme -> readMenuBgColorNight = "#${color.hexString}"
+                else -> readMenuBgColor = "#${color.hexString}"
+            }
+        }
+
+        fun clearCurReadMenuBgColor() {
+            when {
+                AppConfig.isEInkMode -> readMenuBgColorEInk = ""
+                AppConfig.isNightTheme -> readMenuBgColorNight = ""
+                else -> readMenuBgColor = ""
+            }
+        }
+
+        fun curReadMenuBgColor(): Int? {
+            val color = when {
+                AppConfig.isEInkMode -> readMenuBgColorEInk
+                AppConfig.isNightTheme -> readMenuBgColorNight
+                else -> readMenuBgColor
+            }
+            return colorOrNull(color)
         }
 
         fun setCurTextColor(color: Int) {
@@ -749,12 +1151,40 @@ object ReadBookConfig {
             }
         }
 
+        fun curBgColor(): Int {
+            return when {
+                AppConfig.isEInkMode -> colorOrDefault(bgStrEInk, "#FFFFFF")
+                AppConfig.isNightTheme -> colorOrDefault(bgStrNight, "#000000")
+                else -> colorOrDefault(bgStr, "#EEEEEE")
+            }
+        }
+
         fun curBgType(): Int {
             return when {
                 AppConfig.isEInkMode -> bgTypeEInk
                 AppConfig.isNightTheme -> bgTypeNight
                 else -> bgType
             }
+        }
+
+        fun curReadScrollFollowBackground(): Boolean {
+            return when {
+                AppConfig.isEInkMode -> readScrollFollowBackgroundEInk
+                AppConfig.isNightTheme -> readScrollFollowBackgroundNight
+                else -> readScrollFollowBackground
+            }
+        }
+
+        fun setCurReadScrollFollowBackground(value: Boolean) {
+            when {
+                AppConfig.isEInkMode -> readScrollFollowBackgroundEInk = value
+                AppConfig.isNightTheme -> readScrollFollowBackgroundNight = value
+                else -> readScrollFollowBackground = value
+            }
+        }
+
+        fun curPaperInkStrength(): Int {
+            return paperInkStrength.takeIf { it > 0 } ?: if (paperEffect) 60 else 0
         }
 
         fun curBgDrawable(width: Int, height: Int): Drawable {
@@ -767,7 +1197,7 @@ object ReadBookConfig {
             val resources = appCtx.resources
             try {
                 bgDrawable = when (curBgType()) {
-                    0 -> curBgStr.toColorInt().toDrawable()
+                    0 -> curBgColor().toDrawable()
                     1 -> {
                         val path = "bg" + File.separator + curBgStr
                         val bitmap = BitmapUtils.decodeAssetsBitmap(appCtx, path, width, height)
@@ -793,6 +1223,16 @@ object ReadBookConfig {
                 e.printOnDebug()
             }
             return bgDrawable ?: appCtx.getCompatColor(R.color.background).toDrawable()
+        }
+
+        private fun colorOrNull(color: String?): Int? {
+            return color
+                ?.takeIf { it.isNotBlank() }
+                ?.let { runCatching { it.toColorInt() }.getOrNull() }
+        }
+
+        private fun colorOrDefault(color: String?, default: String): Int {
+            return colorOrNull(color) ?: default.toColorInt()
         }
 
         fun getBgPath(bgIndex: Int): String? {
@@ -840,6 +1280,13 @@ object ReadBookConfig {
             "textAccentColor" to textAccentColor,
             "textAccentColorNight" to textAccentColorNight,
             "textAccentColorEInk" to textAccentColorEInk,
+            "readMenuBgColor" to readMenuBgColor.orEmpty(),
+            "readMenuBgColorNight" to readMenuBgColorNight.orEmpty(),
+            "readMenuBgColorEInk" to readMenuBgColorEInk.orEmpty(),
+            "readMenuAlpha" to readMenuAlpha,
+            "readScrollFollowBackground" to readScrollFollowBackground,
+            "readScrollFollowBackgroundNight" to readScrollFollowBackgroundNight,
+            "readScrollFollowBackgroundEInk" to readScrollFollowBackgroundEInk,
             "textAccentColorInt" to textAccentColorInt,
             "textAccentColorIntNight" to textAccentColorIntNight,
             "textAccentColorIntEInk" to textAccentColorIntEInk,
@@ -851,6 +1298,8 @@ object ReadBookConfig {
             "letterSpacing" to letterSpacing,
             "lineSpacingExtra" to lineSpacingExtra,
             "paragraphSpacing" to paragraphSpacing,
+            "paperEffect" to paperEffect,
+            "paperInkStrength" to paperInkStrength,
             "titleMode" to titleMode,
             "titleSize" to titleSize,
             "titleTopSpacing" to titleTopSpacing,

@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
-import android.widget.PopupMenu
 import androidx.activity.addCallback
 import androidx.activity.viewModels
 import androidx.appcompat.widget.SearchView
@@ -26,6 +25,7 @@ import io.legado.app.utils.ConvertUtils
 import io.legado.app.utils.applyNavigationBarPadding
 import io.legado.app.utils.applyTint
 import io.legado.app.utils.openFileUri
+import io.legado.app.utils.showPopupMenu
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import java.io.File
 
@@ -216,15 +216,14 @@ class FileManageActivity : VMBaseActivity<ActivityFileManageBinding, FileManageV
         }
 
         private fun showFileMenu(view: View, file: File) {
-            val popupMenu = PopupMenu(context, view)
-            popupMenu.inflate(R.menu.file_long_click)
-            popupMenu.setOnMenuItemClickListener {
+            view.showPopupMenu(
+                R.menu.file_long_click,
+            ) {
                 when (it.itemId) {
                     R.id.menu_del -> viewModel.delFile(file)
                 }
                 true
             }
-            popupMenu.show()
         }
 
     }

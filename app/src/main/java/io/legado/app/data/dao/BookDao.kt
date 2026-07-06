@@ -15,17 +15,43 @@ import io.legado.app.help.book.isNotShelf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
+data class BookReadRecordInfo(
+    val bookUrl: String,
+    val name: String,
+    val author: String,
+    val coverUrl: String?,
+    val customCoverUrl: String?,
+    val origin: String,
+    val originName: String,
+    val type: Int,
+    val durChapterTime: Long
+) {
+    fun toBook() = Book(
+        bookUrl = bookUrl,
+        name = name,
+        author = author,
+        coverUrl = coverUrl,
+        customCoverUrl = customCoverUrl,
+        origin = origin,
+        originName = originName,
+        type = type,
+        durChapterTime = durChapterTime
+    )
+}
+
 @Dao
 interface BookDao {
 
     fun flowByGroup(groupId: Long): Flow<List<Book>> {
         return when (groupId) {
             BookGroup.IdRoot -> flowRoot()
+            BookGroup.IdPrimaryAll -> flowAll()
+            BookGroup.IdNovel -> flowText()
             BookGroup.IdAll -> flowAll()
             BookGroup.IdLocal -> flowLocal()
             BookGroup.IdAudio -> flowAudio()
-            BookGroup.IdNetNone -> flowNetNoGroup()
-            BookGroup.IdLocalNone -> flowLocalNoGroup()
+            BookGroup.IdImage -> flowImage()
+            BookGroup.IdUngrouped -> flowUngrouped()
             BookGroup.IdVideo -> flowVideo()
             BookGroup.IdError -> flowUpdateError()
             else -> flowByUserGroup(groupId)
@@ -39,7 +65,7 @@ interface BookDao {
         select * from books where type & ${BookType.text} > 0
         and type & ${BookType.local} = 0
         and ((SELECT sum(groupId) FROM book_groups where groupId > 0) & `group`) = 0
-        and (select show from book_groups where groupId = ${BookGroup.IdNetNone}) != 1
+        and (select show from book_groups where groupId = ${BookGroup.IdUngrouped}) != 1
         """
     )
     fun flowRoot(): Flow<List<Book>>
@@ -47,8 +73,14 @@ interface BookDao {
     @Query("SELECT * FROM books order by durChapterTime desc")
     fun flowAll(): Flow<List<Book>>
 
+    @Query("SELECT * FROM books WHERE type & ${BookType.text} > 0")
+    fun flowText(): Flow<List<Book>>
+
     @Query("SELECT * FROM books WHERE type & ${BookType.audio} > 0")
     fun flowAudio(): Flow<List<Book>>
+
+    @Query("SELECT * FROM books WHERE type & ${BookType.image} > 0")
+    fun flowImage(): Flow<List<Book>>
 
     @Query("SELECT * FROM books WHERE type & ${BookType.video} > 0")
     fun flowVideo(): Flow<List<Book>>
@@ -58,19 +90,10 @@ interface BookDao {
 
     @Query(
         """
-        select * from books where type & ${BookType.audio} = 0 and type & ${BookType.local} = 0 and type & ${BookType.video} = 0
-        and ((SELECT sum(groupId) FROM book_groups where groupId > 0) & `group`) = 0
+        select * from books where ((SELECT sum(groupId) FROM book_groups where groupId > 0) & `group`) = 0
         """
     )
-    fun flowNetNoGroup(): Flow<List<Book>>
-
-    @Query(
-        """
-        select * from books where type & ${BookType.local} > 0
-        and ((SELECT sum(groupId) FROM book_groups where groupId > 0) & `group`) = 0
-        """
-    )
-    fun flowLocalNoGroup(): Flow<List<Book>>
+    fun flowUngrouped(): Flow<List<Book>>
 
     @Query("SELECT * FROM books WHERE (`group` & :group) > 0")
     fun flowByUserGroup(group: Long): Flow<List<Book>>
@@ -115,6 +138,17 @@ interface BookDao {
 
     @get:Query("SELECT * FROM books")
     val all: List<Book>
+
+    @get:Query(
+        """
+        SELECT bookUrl, name, author, coverUrl, customCoverUrl, origin, originName, type, durChapterTime
+        FROM books
+        """
+    )
+    val allReadRecordInfo: List<BookReadRecordInfo>
+
+    @get:Query("SELECT * FROM books where type & ${BookType.notShelf} > 0")
+    val notShelfBooks: List<Book>
 
     @Query("SELECT * FROM books where type & :type > 0 and type & ${BookType.local} = 0")
     fun getByTypeOnLine(type: Int): List<Book>

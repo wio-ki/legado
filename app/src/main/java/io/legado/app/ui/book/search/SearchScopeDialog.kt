@@ -17,8 +17,10 @@ import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.databinding.DialogSearchScopeBinding
 import io.legado.app.databinding.ItemCheckBoxBinding
 import io.legado.app.databinding.ItemRadioButtonBinding
+import io.legado.app.lib.theme.applyUiBodyTypeface
+import io.legado.app.lib.theme.applyUiSearchTypeface
 import io.legado.app.lib.theme.primaryColor
-import io.legado.app.utils.applyTint
+import io.legado.app.utils.applyUiMenuStyle
 import io.legado.app.utils.flowWithLifecycleAndDatabaseChange
 import io.legado.app.utils.setLayout
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -60,11 +62,12 @@ class SearchScopeDialog : BaseDialogFragment(R.layout.dialog_search_scope) {
 
     private fun initMenu() {
         binding.toolBar.inflateMenu(R.menu.book_search_scope)
-        binding.toolBar.menu.applyTint(requireContext())
+        binding.toolBar.menu.applyUiMenuStyle(requireContext())
     }
 
     private fun initSearchView() {
         val searchView = binding.toolBar.menu.findItem(R.id.menu_screen).actionView as SearchView
+        searchView.applyUiSearchTypeface(requireContext())
         searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
             override fun onQueryTextSubmit(query: String?): Boolean {
                 return false
@@ -165,9 +168,15 @@ class SearchScopeDialog : BaseDialogFragment(R.layout.dialog_search_scope) {
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ItemViewHolder {
             return if (viewType == 1) {
-                ItemViewHolder(ItemRadioButtonBinding.inflate(layoutInflater, parent, false))
+                ItemViewHolder(
+                    ItemRadioButtonBinding.inflate(layoutInflater, parent, false)
+                        .applyUiBodyTypeface(parent.context)
+                )
             } else {
-                ItemViewHolder(ItemCheckBoxBinding.inflate(layoutInflater, parent, false))
+                ItemViewHolder(
+                    ItemCheckBoxBinding.inflate(layoutInflater, parent, false)
+                        .applyUiBodyTypeface(parent.context)
+                )
             }
         }
 

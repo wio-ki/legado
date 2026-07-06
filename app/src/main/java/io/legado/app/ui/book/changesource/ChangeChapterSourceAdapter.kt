@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
-import androidx.appcompat.widget.PopupMenu
 import androidx.core.graphics.drawable.DrawableCompat
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.DiffUtil
@@ -17,6 +16,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.utils.getCompatColor
 import io.legado.app.utils.gone
 import io.legado.app.utils.invisible
+import io.legado.app.utils.showPopupMenu
 import io.legado.app.utils.visible
 import splitties.init.appCtx
 import splitties.views.onLongClick
@@ -165,9 +165,9 @@ class ChangeChapterSourceAdapter(
 
     private fun showMenu(view: View, searchBook: SearchBook?) {
         searchBook ?: return
-        val popupMenu = PopupMenu(context, view)
-        popupMenu.inflate(R.menu.change_source_item)
-        popupMenu.setOnMenuItemClickListener {
+        view.showPopupMenu(
+            R.menu.change_source_item,
+        ) {
             when (it.itemId) {
                 R.id.menu_top_source -> {
                     callBack.topSource(searchBook)
@@ -188,7 +188,6 @@ class ChangeChapterSourceAdapter(
             }
             true
         }
-        popupMenu.show()
     }
 
     interface CallBack {

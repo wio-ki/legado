@@ -18,3 +18,8 @@ package-lock.json
 .kotlin/
 .cxx
 .vscode
+.env
+/.legado-cli/
+/target/
+export-patch.bat
+update.patch

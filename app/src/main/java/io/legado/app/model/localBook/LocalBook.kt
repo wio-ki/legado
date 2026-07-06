@@ -68,6 +68,8 @@ import kotlinx.coroutines.currentCoroutineContext
  */
 object LocalBook {
 
+    private const val LARGE_EPUB_FAST_IMPORT_BYTES = 100L * 1024L * 1024L
+
     private val nameAuthorPatterns = arrayOf(
         Pattern.compile("(.*?)《([^《》]+)》.*?作者：(.*)"),
         Pattern.compile("(.*?)《([^《》]+)》(.*)"),
@@ -213,14 +215,38 @@ object LocalBook {
     }
 
     fun getCoverPath(book: Book): String {
-        return getCoverPath(book.bookUrl)
+        return getCoverPath(book.bookUrl, "jpg")
     }
 
-    private fun getCoverPath(bookUrl: String): String {
+    fun getCoverPath(book: Book, extension: String): String {
+        return getCoverPath(book.bookUrl, extension)
+    }
+
+    fun findCoverPath(book: Book): String? {
+        return listOf("png", "jpg", "webp")
+            .asSequence()
+            .map { getCoverPath(book.bookUrl, it) }
+            .firstOrNull { File(it).exists() }
+    }
+
+    fun resolveCoverPath(book: Book, extension: String): String {
+        val current = book.coverUrl
+        if (!current.isNullOrBlank() && !isManagedCoverPath(book, current)) {
+            return current
+        }
+        return getCoverPath(book.bookUrl, extension)
+    }
+
+    private fun isManagedCoverPath(book: Book, path: String): Boolean {
+        return listOf("png", "jpg", "webp").any { path == getCoverPath(book.bookUrl, it) }
+    }
+
+    private fun getCoverPath(bookUrl: String, extension: String): String {
+        val safeExtension = extension.substringAfterLast('.').ifBlank { "jpg" }.lowercase()
         return FileUtils.getPath(
             appCtx.externalFiles,
             "covers",
-            "${MD5Utils.md5Encode16(bookUrl)}.jpg"
+            "${MD5Utils.md5Encode16(bookUrl)}.$safeExtension"
         )
     }
 
@@ -238,16 +264,18 @@ object LocalBook {
     /**
      * 导入本地文件
      */
-    fun importFile(uri: Uri): Book {
-        val bookUrl: String
+    fun importFile(uri: Uri, onStage: ((String) -> Unit)? = null): Book {
         //updateTime变量不要修改,否则会导致读取不到缓存
-        val (fileName, _, _, updateTime, _) = FileDoc.fromUri(uri, false).apply {
-            if (size == 0L) throw EmptyFileException("Unexpected empty File")
-
-            bookUrl = toString()
-        }
+        onStage?.invoke("读取文件信息")
+        val fileDoc = FileDoc.fromUri(uri, false)
+        if (fileDoc.size == 0L) throw EmptyFileException("Unexpected empty File")
+        val fileName = fileDoc.name
+        val updateTime = fileDoc.lastModified
+        val bookUrl = fileDoc.toString()
+        val fileSize = fileDoc.size
         var book = appDb.bookDao.getBook(bookUrl)
         if (book == null) {
+            onStage?.invoke("解析书籍信息")
             val nameAuthor = analyzeNameAuthor(fileName)
             book = Book(
                 type = BookType.text or BookType.local,
@@ -258,11 +286,13 @@ object LocalBook {
                 latestChapterTime = updateTime,
                 order = appDb.bookDao.minOrder - 1
             )
-            upBookInfo(book)
+            upBookInfoSafely(book, fileSize)
+            onStage?.invoke("保存书籍信息")
             appDb.bookDao.insert(book)
         } else {
+            onStage?.invoke("更新书籍信息")
             deleteBook(book, false)
-            upBookInfo(book)
+            upBookInfoSafely(book, fileSize)
             // 触发 isLocalModified
             book.latestChapterTime = 0
             //已有书籍说明是更新,删除原有目录
@@ -278,6 +308,37 @@ object LocalBook {
             book.isPdf -> PdfFile.upBookInfo(book)
             book.isMobi -> MobiFile.upBookInfo(book)
         }
+    }
+
+    private fun upBookInfoSafely(book: Book, fileSize: Long) {
+        if (book.isEpub && shouldDeferEpubBookInfo(fileSize)) {
+            if (book.name.isBlank()) {
+                book.name = book.originName.substringBeforeLast(".")
+            }
+            if (book.intro.isNullOrBlank()) {
+                book.intro = "大体积 EPUB 已快速导入，封面和简介将在阅读时按需加载。"
+            }
+            return
+        }
+        if (!book.isEpub) {
+            upBookInfo(book)
+            return
+        }
+        kotlin.runCatching {
+            upBookInfo(book)
+        }.onFailure {
+            AppLog.put("EPUB 元数据解析失败，已先导入书籍\n${it.localizedMessage}", it)
+            if (book.name.isBlank()) {
+                book.name = book.originName.substringBeforeLast(".")
+            }
+            if (book.intro.isNullOrBlank()) {
+                book.intro = "EPUB 已导入，元数据将在阅读时按需加载。"
+            }
+        }
+    }
+
+    private fun shouldDeferEpubBookInfo(fileSize: Long): Boolean {
+        return fileSize >= LARGE_EPUB_FAST_IMPORT_BYTES
     }
 
     /* 导入压缩包内的书籍 */
@@ -304,17 +365,19 @@ object LocalBook {
     }
 
     /* 批量导入 支持自动导入压缩包的支持书籍 */
-    fun importFiles(uri: Uri): List<Book> {
+    fun importFiles(uri: Uri, onStage: ((String) -> Unit)? = null): List<Book> {
         val books = mutableListOf<Book>()
+        onStage?.invoke("读取文件信息")
         val fileDoc = FileDoc.fromUri(uri, false)
         if (ArchiveUtils.isArchive(fileDoc.name)) {
+            onStage?.invoke("解压压缩包")
             books.addAll(
                 importArchiveFile(uri) {
                     it.matches(AppPattern.bookFileRegex)
                 }
             )
         } else {
-            books.add(importFile(uri))
+            books.add(importFile(uri, onStage))
         }
         return books
     }
@@ -339,6 +402,20 @@ object LocalBook {
         if (errorCount == uris.size) {
             throw NoStackTraceException("ImportFiles Error:\nAll input files occur error")
         }
+    }
+
+    fun prepareImportedBookCache(
+        book: Book,
+        onProgress: (stage: String, processed: Int, total: Int, title: String) -> Unit = { _, _, _, _ -> }
+    ) {
+        if (!book.isEpub) return
+        onProgress("toc", 0, 1, book.name)
+        val chapterList = getChapterList(book)
+        if (chapterList.isEmpty()) return
+        appDb.bookChapterDao.delByBook(book.bookUrl)
+        appDb.bookChapterDao.insert(*chapterList.toTypedArray())
+        appDb.bookDao.update(book)
+        onProgress("toc", 1, 1, book.name)
     }
 
     /**
@@ -386,10 +463,7 @@ object LocalBook {
 
     fun deleteBook(book: Book, deleteOriginal: Boolean) {
         kotlin.runCatching {
-            BookHelp.clearCache(book)
-            if (!book.coverUrl.isNullOrEmpty()) {
-                FileUtils.delete(book.coverUrl!!)
-            }
+            clearBookShelfCache(book)
             if (deleteOriginal) {
                 if (book.bookUrl.isContentScheme()) {
                     val uri = book.bookUrl.toUri()
@@ -399,6 +473,33 @@ object LocalBook {
                 }
             }
         }
+    }
+
+    fun clearBookShelfCache(book: Book) {
+        kotlin.runCatching {
+            BookHelp.clearCache(book)
+            clearManagedCoverCache(book)
+            if (book.isEpub) {
+                EpubFile.clearCache(book)
+                clearCopiedEpubCache(book)
+            }
+            book.removeLocalUriCache()
+        }
+    }
+
+    private fun clearManagedCoverCache(book: Book) {
+        listOf("png", "jpg", "webp").forEach { extension ->
+            FileUtils.delete(getCoverPath(book.bookUrl, extension))
+        }
+    }
+
+    private fun clearCopiedEpubCache(book: Book) {
+        if (!book.bookUrl.isContentScheme()) return
+        val hasOtherSameEpub = appDb.bookDao.all.any {
+            it.bookUrl != book.bookUrl && it.isEpub && it.originName == book.originName
+        }
+        if (hasOtherSameEpub) return
+        FileUtils.delete(FileUtils.getPath(appCtx.externalFiles, "epub", book.originName))
     }
 
     /**

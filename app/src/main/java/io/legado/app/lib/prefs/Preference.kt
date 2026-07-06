@@ -13,14 +13,17 @@ import androidx.core.view.isVisible
 import androidx.preference.PreferenceViewHolder
 import io.legado.app.R
 import io.legado.app.lib.theme.accentColor
+import io.legado.app.lib.theme.applyUiTitleTypeface
+import io.legado.app.lib.theme.applyUiBodyTypeface
 import io.legado.app.lib.theme.bottomBackground
 import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.lib.theme.getSecondaryTextColor
+import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.utils.ColorUtils
 import splitties.views.onLongClick
 import kotlin.math.roundToInt
 
-open class Preference(context: Context, attrs: AttributeSet) :
+open class Preference(context: Context, attrs: AttributeSet? = null) :
     androidx.preference.Preference(context, attrs) {
 
     private var onLongClick: ((preference: Preference) -> Boolean)? = null
@@ -34,6 +37,11 @@ open class Preference(context: Context, attrs: AttributeSet) :
     }
 
     companion object {
+
+        fun applyTypeface(context: Context, viewHolder: PreferenceViewHolder?) {
+            if (viewHolder?.itemView?.isInEditMode != false) return
+            viewHolder.itemView.applyUiBodyTypeface(context)
+        }
 
         fun <T : View> bindView(
             context: Context,
@@ -57,6 +65,11 @@ open class Preference(context: Context, attrs: AttributeSet) :
             tvSummary?.let {
                 tvSummary.text = summary
                 tvSummary.isGone = summary.isNullOrEmpty()
+            }
+            if (!viewHolder.itemView.isInEditMode) {
+                applyTypeface(context, viewHolder)
+                tvTitle?.applyUiTitleTypeface(context)
+                tvSummary?.typeface = context.uiTypeface()
             }
             if (isBottomBackground && !viewHolder.itemView.isInEditMode) {
                 val isLight = ColorUtils.isColorLight(context.bottomBackground)
@@ -111,6 +124,7 @@ open class Preference(context: Context, attrs: AttributeSet) :
     final override fun onBindViewHolder(holder: PreferenceViewHolder) {
         super.onBindViewHolder(holder)
         onBindView(holder)
+        PreferenceItemStyle.apply(this, holder)
         onLongClick?.let { listener ->
             holder.itemView.onLongClick {
                 listener.invoke(this)

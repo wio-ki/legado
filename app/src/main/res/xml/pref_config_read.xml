@@ -136,6 +136,20 @@
         app:iconSpaceReserved="false"
         app:isBottomBackground="true" />
 
+    <io.legado.app.lib.prefs.Preference
+        android:key="pageAnimationSpeed"
+        android:summary="@string/page_animation_speed_summary"
+        android:title="@string/page_animation_speed_title"
+        app:iconSpaceReserved="false"
+        app:isBottomBackground="true" />
+
+    <io.legado.app.lib.prefs.Preference
+        android:key="keyPageAnimationSpeed"
+        android:summary="@string/key_page_animation_speed_summary"
+        android:title="@string/key_page_animation_speed_title"
+        app:iconSpaceReserved="false"
+        app:isBottomBackground="true" />
+
     <io.legado.app.lib.prefs.SwitchPreference
         android:defaultValue="true"
         android:key="autoChangeSource"
@@ -173,6 +187,15 @@
         app:iconSpaceReserved="false"
         app:isBottomBackground="true" />
 
+    <io.legado.app.lib.prefs.NameListPreference
+        android:defaultValue="default"
+        android:entries="@array/bottom_web_view_dialog_height_title"
+        android:entryValues="@array/bottom_web_view_dialog_height_value"
+        android:key="bottomWebViewDialogHeight"
+        android:title="@string/bottom_web_view_dialog_height"
+        app:iconSpaceReserved="false"
+        app:isBottomBackground="true" />
+
     <io.legado.app.lib.prefs.SwitchPreference
         android:defaultValue="false"
         android:key="optimizeRender"
@@ -203,6 +226,13 @@
         android:defaultValue="false"
         android:key="expandTextMenu"
         android:title="@string/expand_text_menu"
+        app:iconSpaceReserved="false"
+        app:isBottomBackground="true" />
+
+    <io.legado.app.lib.prefs.Preference
+        android:key="contentSelectMenuConfig"
+        android:summary="@string/content_select_menu_config_summary"
+        android:title="@string/content_select_menu_config"
         app:iconSpaceReserved="false"
         app:isBottomBackground="true" />
 

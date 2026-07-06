@@ -17,10 +17,12 @@ import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.getFolderNameNoCache
 import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isImage
+import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.model.ReadBook
+import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import kotlinx.parcelize.IgnoredOnParcel
@@ -436,6 +438,9 @@ data class Book(
         if (ReadBook.book?.bookUrl == bookUrl) {
             ReadBook.book = null
         }
+        if (isLocal) {
+            LocalBook.clearBookShelfCache(this)
+        }
         appDb.bookDao.delete(this)
     }
 
@@ -466,7 +471,14 @@ data class Book(
         var openCredits: Int = 0,       //音频片头
         var closeCredits: Int = 0,       //音频片尾
         var playMode: Int = 0,           //音频播放模式
-        var playSpeed: Float = 1.0f      //音频播放速度
+        var playSpeed: Float = 1.0f,     //音频播放速度
+        var mangaHorizontalScroll: Boolean? = null,
+        var mangaDisablePageAnim: Boolean? = null,
+        var mangaDisableHorizontalPageSnap: Boolean? = null,
+        var mangaDisableClickScroll: Boolean? = null,
+        var mangaDisableScale: Boolean? = null,
+        var mangaAutoPageSpeed: Int? = null,
+        var mangaPageAnim: Int? = null
     ) : Parcelable
 
     class Converters {

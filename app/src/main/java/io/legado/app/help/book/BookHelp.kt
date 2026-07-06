@@ -13,6 +13,7 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileUtils
@@ -73,6 +74,10 @@ object BookHelp {
         FileUtils.delete(filePath)
     }
 
+    fun getCacheDir(book: Book): File {
+        return downloadDir.getFile(cacheFolderName, book.getFolderName())
+    }
+
     fun updateCacheFolder(oldBook: Book, newBook: Book) {
         val oldFolderName = oldBook.getFolderNameNoCache()
         val newFolderName = newBook.getFolderNameNoCache()
@@ -104,7 +109,9 @@ object BookHelp {
             }
             downloadDir.getFile(cacheFolderName)
                 .listFiles()?.forEach { bookFile ->
-                    if (!bookFolderNames.contains(bookFile.name)) {
+                    if (!bookFolderNames.contains(bookFile.name)
+                        && !CacheManifestHelper.hasManifest(bookFile)
+                    ) {
                         FileUtils.delete(bookFile.absolutePath)
                     }
                 }
@@ -166,6 +173,7 @@ object BookHelp {
         try {
             saveText(book, bookChapter, content)
             //saveImages(bookSource, book, bookChapter, content)
+            CacheManifestHelper.refresh(book)
             postEvent(EventBus.SAVE_CONTENT, Pair(book, bookChapter))
         } catch (e: Exception) {
             e.printStackTrace()
@@ -180,12 +188,11 @@ object BookHelp {
     ) {
         if (content.isEmpty()) return
         //保存文本
-        FileUtils.createFileIfNotExist(
-            downloadDir,
-            cacheFolderName,
-            book.getFolderName(),
-            bookChapter.getFileName(),
-        ).writeText(content)
+        getPrimaryContentFile(book, bookChapter).createFileIfNotExist().writeText(content)
+        // 清理旧的 index 型文件，避免重复占用和命中过期缓存
+        getLegacyContentFile(book, bookChapter)
+            ?.takeIf { it.absolutePath != getPrimaryContentFile(book, bookChapter).absolutePath }
+            ?.delete()
         if (book.isOnLineTxt && AppConfig.tocCountWords) {
             val wordCount = StringUtils.wordCountFormat(content.length)
             bookChapter.wordCount = wordCount
@@ -335,6 +342,15 @@ object BookHelp {
         return fileNames
     }
 
+    fun getChapterCacheFileNames(
+        book: Book,
+        chapter: BookChapter,
+        suffix: String = "nb"
+    ): Set<String> {
+        return getContentFileCandidates(book, chapter, suffix)
+            .mapTo(linkedSetOf()) { it.name }
+    }
+
     /**
      * 检测该章节是否下载
      */
@@ -344,11 +360,7 @@ object BookHelp {
         ) {
             true
         } else {
-            downloadDir.exists(
-                cacheFolderName,
-                book.getFolderName(),
-                bookChapter.getFileName()
-            )
+            getContentFileCandidates(book, bookChapter).any { it.exists() }
         }
     }
 
@@ -398,15 +410,35 @@ object BookHelp {
      * 读取章节内容
      */
     fun getContent(book: Book, bookChapter: BookChapter): String? {
-        val file = downloadDir.getFile(
-            cacheFolderName,
-            book.getFolderName(),
-            bookChapter.getFileName()
-        )
-        if (file.exists()) {
+        val primaryFile = getPrimaryContentFile(book, bookChapter)
+        val file = getContentFileCandidates(book, bookChapter).firstOrNull { it.exists() }
+        if (file != null) {
             val string = file.readText()
             if (string.isEmpty()) {
                 return null
+            }
+            if (file.absolutePath != primaryFile.absolutePath) {
+                primaryFile.parentFile?.mkdirs()
+                kotlin.runCatching {
+                    file.copyTo(primaryFile, overwrite = true)
+                    file.delete()
+                }
+            }
+            val needRefreshEpubContent = book.isEpub && when (AppConfig.epubParseMode) {
+                AppConfig.EPUB_PARSE_MODE_CLASSIC ->
+                    !string.contains(EpubFile.NATIVE_CONTENT_FLAG) ||
+                        !string.contains(EpubFile.NATIVE_LAYOUT_FLAG) ||
+                        !string.contains(EpubFile.NATIVE_CONTENT_VERSION_FLAG)
+                else -> string.contains(EpubFile.NATIVE_CONTENT_FLAG) ||
+                    string.contains("<usehtml", ignoreCase = true) ||
+                    !string.contains(EpubFile.READABLE_CONTENT_VERSION_FLAG)
+            }
+            if (needRefreshEpubContent) {
+                val epubContent = LocalBook.getContent(book, bookChapter)
+                if (epubContent != null) {
+                    saveText(book, bookChapter, epubContent)
+                    return epubContent
+                }
             }
             return string
         }
@@ -424,37 +456,116 @@ object BookHelp {
      * 删除章节内容
      */
     fun delContent(book: Book, bookChapter: BookChapter) {
-        FileUtils.createFileIfNotExist(
-            downloadDir,
-            cacheFolderName,
-            book.getFolderName(),
-            bookChapter.getFileName()
-        ).delete()
+        getContentFileCandidates(book, bookChapter).forEach {
+            if (it.exists()) it.delete()
+        }
+    }
+
+    /**
+     * 删除单章缓存。漫画会一并删除正文中引用的图片缓存。
+     */
+    fun delChapterCache(book: Book, bookChapter: BookChapter) {
+        if (book.isImage) {
+            delChapterImages(book, bookChapter)
+        }
+        delContent(book, bookChapter)
+    }
+
+    private fun delChapterImages(book: Book, bookChapter: BookChapter) {
+        val content = getContent(book, bookChapter) ?: return
+        val matcher = AppPattern.imgPattern.matcher(content)
+        while (matcher.find()) {
+            val src = matcher.group(1) ?: continue
+            val mSrc = NetworkUtils.getAbsoluteURL(bookChapter.url, src)
+            getImage(book, mSrc).takeIf { it.exists() }?.delete()
+        }
     }
 
     /**
      * 设置是否禁用正文的去除重复标题,针对单个章节
      */
     fun setRemoveSameTitle(book: Book, bookChapter: BookChapter, removeSameTitle: Boolean) {
-        val fileName = bookChapter.getFileName("nr")
+        val file = getPrimaryContentFile(book, bookChapter, "nr")
         val contentProcessor = ContentProcessor.get(book)
         if (removeSameTitle) {
-            val path = FileUtils.getPath(
-                downloadDir,
-                cacheFolderName,
-                book.getFolderName(),
-                fileName
-            )
-            contentProcessor.removeSameTitleCache.remove(fileName)
-            File(path).delete()
+            contentProcessor.removeSameTitleCache.remove(file.name)
+            getContentFileCandidates(book, bookChapter, "nr").forEach {
+                contentProcessor.removeSameTitleCache.remove(it.name)
+                it.delete()
+            }
         } else {
-            FileUtils.createFileIfNotExist(
-                downloadDir,
-                cacheFolderName,
-                book.getFolderName(),
-                fileName
-            )
-            contentProcessor.removeSameTitleCache.add(fileName)
+            file.createFileIfNotExist()
+            contentProcessor.removeSameTitleCache.add(file.name)
+        }
+    }
+
+    fun remapContentCache(book: Book, oldChapters: List<BookChapter>, newChapters: List<BookChapter>) {
+        if (book.isLocal || oldChapters.isEmpty() || newChapters.isEmpty()) return
+        val oldByUrlKey = oldChapters
+            .filter { !it.isVolume && it.url.isNotBlank() }
+            .associateBy { it.contentCacheIdentity() }
+        val oldByTitle = oldChapters
+            .groupBy { it.title.trim() }
+            .mapValues { (_, value) -> value.singleOrNull() }
+        newChapters.forEach { newChapter ->
+            val oldChapter = oldByUrlKey[newChapter.contentCacheIdentity()]
+                ?: oldByTitle[newChapter.title.trim()]
+                ?: return@forEach
+            migrateChapterCacheFiles(book, oldChapter, newChapter, "nb")
+            migrateChapterCacheFiles(book, oldChapter, newChapter, "nr")
+        }
+    }
+
+    private fun migrateChapterCacheFiles(
+        book: Book,
+        oldChapter: BookChapter,
+        newChapter: BookChapter,
+        suffix: String
+    ) {
+        val target = getPrimaryContentFile(book, newChapter, suffix)
+        if (target.exists()) return
+        val candidates = linkedSetOf<File>()
+        getLegacyContentFile(book, oldChapter, suffix)?.let(candidates::add)
+        getStableContentFile(book, oldChapter, suffix)?.let(candidates::add)
+        val source = candidates.firstOrNull { it.exists() } ?: return
+        target.parentFile?.mkdirs()
+        kotlin.runCatching {
+            source.copyTo(target, overwrite = true)
+            if (source.absolutePath != target.absolutePath) {
+                source.delete()
+            }
+        }
+    }
+
+    private fun getContentFileCandidates(book: Book, chapter: BookChapter, suffix: String = "nb"): List<File> {
+        val files = linkedSetOf<File>()
+        getPrimaryContentFile(book, chapter, suffix).let(files::add)
+        getLegacyContentFile(book, chapter, suffix)?.let(files::add)
+        return files.toList()
+    }
+
+    private fun getPrimaryContentFile(book: Book, chapter: BookChapter, suffix: String = "nb"): File {
+        return if (book.isLocal) {
+            downloadDir.getFile(cacheFolderName, book.getFolderName(), chapter.getFileName(suffix))
+        } else {
+            getStableContentFile(book, chapter, suffix)
+                ?: downloadDir.getFile(cacheFolderName, book.getFolderName(), chapter.getFileName(suffix))
+        }
+    }
+
+    private fun getLegacyContentFile(book: Book, chapter: BookChapter, suffix: String = "nb"): File? {
+        return if (book.isLocal) {
+            null
+        } else {
+            downloadDir.getFile(cacheFolderName, book.getFolderName(), chapter.getFileName(suffix))
+        }
+    }
+
+    private fun getStableContentFile(book: Book, chapter: BookChapter, suffix: String = "nb"): File? {
+        return if (book.isLocal) {
+            null
+        } else {
+            downloadDir.getFile(cacheFolderName, book.getFolderName(), chapter.contentCacheFileName(suffix))
         }
     }
 
@@ -462,13 +573,7 @@ object BookHelp {
      * 获取是否去除重复标题
      */
     fun removeSameTitle(book: Book, bookChapter: BookChapter): Boolean {
-        val path = FileUtils.getPath(
-            downloadDir,
-            cacheFolderName,
-            book.getFolderName(),
-            bookChapter.getFileName("nr")
-        )
-        return !File(path).exists()
+        return getContentFileCandidates(book, bookChapter, "nr").none { it.exists() }
     }
 
     /**

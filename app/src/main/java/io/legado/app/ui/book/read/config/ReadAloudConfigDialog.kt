@@ -1,11 +1,15 @@
 package io.legado.app.ui.book.read.config
 
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import androidx.core.content.ContextCompat
 import androidx.preference.ListPreference
 import androidx.preference.Preference
 import io.legado.app.R
@@ -16,9 +20,11 @@ import io.legado.app.data.appDb
 import io.legado.app.help.IntentHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.SelectItem
+import io.legado.app.lib.permission.Permissions
+import io.legado.app.lib.permission.PermissionsCompat
 import io.legado.app.lib.prefs.SwitchPreference
 import io.legado.app.lib.prefs.fragment.PreferenceFragment
-import io.legado.app.lib.theme.backgroundColor
+import io.legado.app.lib.theme.dialogSurfaceBackground
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.model.ReadAloud
 import io.legado.app.service.BaseReadAloudService
@@ -47,7 +53,8 @@ class ReadAloudConfigDialog : BasePrefDialogFragment() {
         savedInstanceState: Bundle?
     ): View {
         val view = LinearLayout(requireContext())
-        view.setBackgroundColor(requireContext().backgroundColor)
+        view.background = requireContext().dialogSurfaceBackground
+        view.clipToOutline = true
         view.id = R.id.tag1
         container?.addView(view)
         return view
@@ -81,13 +88,15 @@ class ReadAloudConfigDialog : BasePrefDialogFragment() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             addPreferencesFromResource(R.xml.pref_config_aloud)
             upSpeakEngineSummary()
-            findPreference<SwitchPreference>(PreferKey.pauseReadAloudWhilePhoneCalls)?.let {
-                it.isEnabled = AppConfig.ignoreAudioFocus
-            }
+            initPhoneCallPausePreference()
+            initFloatOnDesktopPreference()
+            upFloatOnDesktopPreference()
         }
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
             super.onViewCreated(view, savedInstanceState)
+            listView.background = null
+            listView.clipToPadding = true
             listView.setEdgeEffectColor(primaryColor)
         }
 
@@ -120,12 +129,77 @@ class ReadAloudConfigDialog : BasePrefDialogFragment() {
                     }
                 }
 
+                PreferKey.readAloudFloatOnDesktop -> {
+                    postEvent(PreferKey.readAloudFloatOnDesktop, "")
+                }
+
+                PreferKey.readAloudHideFloatingWindow -> {
+                    upFloatOnDesktopPreference()
+                    postEvent(PreferKey.readAloudHideFloatingWindow, "")
+                }
+
                 PreferKey.ignoreAudioFocus -> {
-                    findPreference<SwitchPreference>(PreferKey.pauseReadAloudWhilePhoneCalls)?.let {
-                        it.isEnabled = AppConfig.ignoreAudioFocus
-                    }
+                    Unit
                 }
             }
+        }
+
+        private fun initFloatOnDesktopPreference() {
+            findPreference<SwitchPreference>(PreferKey.readAloudFloatOnDesktop)
+                ?.onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, newValue ->
+                    val enabled = newValue as? Boolean ?: return@OnPreferenceChangeListener true
+                    if (enabled && !hasOverlayPermission()) {
+                        requestOverlayPermission()
+                    }
+                    true
+                }
+        }
+
+        private fun upFloatOnDesktopPreference() {
+            findPreference<SwitchPreference>(PreferKey.readAloudFloatOnDesktop)?.isEnabled =
+                !AppConfig.readAloudHideFloatingWindow
+        }
+
+        private fun initPhoneCallPausePreference() {
+            findPreference<SwitchPreference>(PreferKey.pauseReadAloudWhilePhoneCalls)
+                ?.onPreferenceChangeListener = Preference.OnPreferenceChangeListener { preference, newValue ->
+                    val enabled = newValue as? Boolean ?: return@OnPreferenceChangeListener true
+                    if (!enabled || hasReadPhoneStatePermission()) {
+                        return@OnPreferenceChangeListener true
+                    }
+                    PermissionsCompat.Builder()
+                        .addPermissions(Permissions.READ_PHONE_STATE)
+                        .rationale(R.string.read_aloud_read_phone_state_permission_rationale)
+                        .onGranted {
+                            AppConfig.pauseReadAloudWhilePhoneCalls = true
+                            (preference as? SwitchPreference)?.isChecked = true
+                        }
+                        .onDenied {
+                            AppConfig.pauseReadAloudWhilePhoneCalls = false
+                            (preference as? SwitchPreference)?.isChecked = false
+                        }
+                        .request()
+                    false
+                }
+        }
+
+        private fun hasReadPhoneStatePermission(): Boolean {
+            return ContextCompat.checkSelfPermission(
+                requireContext(),
+                Permissions.READ_PHONE_STATE
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+
+        private fun hasOverlayPermission(): Boolean {
+            return Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                    Settings.canDrawOverlays(requireContext())
+        }
+
+        private fun requestOverlayPermission() {
+            PermissionsCompat.Builder()
+                .addPermissions(Permissions.SYSTEM_ALERT_WINDOW)
+                .rationale(R.string.float_permission_rationale)
+                .request()
         }
 
         private fun upPreferenceSummary(preference: Preference?, value: String) {

@@ -6,10 +6,11 @@ import android.graphics.PorterDuff
 import android.util.AttributeSet
 import android.view.LayoutInflater
 import android.view.Menu
+import android.view.MenuItem
 import android.widget.FrameLayout
+import android.widget.PopupMenu
 import androidx.annotation.MenuRes
 import androidx.annotation.StringRes
-import androidx.appcompat.widget.PopupMenu
 import io.legado.app.R
 import io.legado.app.databinding.ViewSelectActionBarBinding
 import io.legado.app.lib.theme.TintHelper
@@ -19,6 +20,8 @@ import io.legado.app.lib.theme.elevation
 import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.lib.theme.getSecondaryDisabledTextColor
 import io.legado.app.lib.theme.transparentNavBar
+import io.legado.app.utils.applyUiMenuStyle
+import io.legado.app.utils.applyUiMenuTitleSize
 import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.applyNavigationBarPadding
 import io.legado.app.utils.visible
@@ -35,7 +38,8 @@ class SelectActionBar @JvmOverloads constructor(
     private val disabledColor = context.getSecondaryDisabledTextColor(bgIsLight)
 
     private var callBack: CallBack? = null
-    private var selMenu: PopupMenu? = null
+    private var selMenu: Menu? = null
+    private var menuItemClickListener: MenuItem.OnMenuItemClickListener? = null
     private val binding = ViewSelectActionBarBinding
         .inflate(LayoutInflater.from(context), this, true)
 
@@ -56,7 +60,10 @@ class SelectActionBar @JvmOverloads constructor(
             }
             binding.btnRevertSelection.setOnClickListener { callBack?.revertSelection() }
             binding.btnSelectActionMain.setOnClickListener { callBack?.onClickSelectBarMainAction() }
-            binding.ivMenuMore.setOnClickListener { selMenu?.show() }
+            binding.ivMenuMore.setOnClickListener {
+                val menu = selMenu ?: return@setOnClickListener
+                showSelectionMenu(menu)
+            }
             applyNavigationBarPadding()
         }
     }
@@ -72,18 +79,41 @@ class SelectActionBar @JvmOverloads constructor(
     }
 
     fun inflateMenu(@MenuRes resId: Int): Menu? {
-        selMenu = PopupMenu(context, binding.ivMenuMore)
-        selMenu?.inflate(resId)
+        val popupMenu = PopupMenu(context, binding.ivMenuMore)
+        popupMenu.inflate(resId)
+        selMenu = popupMenu.menu
+        selMenu?.applyUiMenuTitleSize(context)
         binding.ivMenuMore.visible()
-        return selMenu?.menu
+        return selMenu
     }
 
     fun setCallBack(callBack: CallBack) {
         this.callBack = callBack
     }
 
-    fun setOnMenuItemClickListener(listener: PopupMenu.OnMenuItemClickListener) {
-        selMenu?.setOnMenuItemClickListener(listener)
+    fun setOnMenuItemClickListener(listener: MenuItem.OnMenuItemClickListener) {
+        menuItemClickListener = listener
+    }
+
+    private fun showSelectionMenu(menu: Menu) {
+        PopupMenu(context, binding.ivMenuMore).apply {
+            val itemMap = hashMapOf<Int, MenuItem>()
+            for (index in 0 until menu.size()) {
+                val item = menu.getItem(index)
+                if (item.isVisible) {
+                    itemMap[item.itemId] = item
+                    this.menu.add(Menu.NONE, item.itemId, index, item.title).icon = item.icon
+                }
+            }
+            this.menu.applyUiMenuStyle(context)
+            setOnMenuItemClickListener { item ->
+                itemMap[item.itemId]?.let {
+                    menuItemClickListener?.onMenuItemClick(it)
+                }
+                true
+            }
+            show()
+        }
     }
 
     fun upCountView(selectCount: Int, allCount: Int) = binding.run {

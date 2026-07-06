@@ -5,36 +5,36 @@ package io.legado.app.ui.main.bookshelf.style1
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
-import androidx.appcompat.widget.SearchView
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentStatePagerAdapter
-import com.google.android.material.tabs.TabLayout
 import io.legado.app.R
+import io.legado.app.constant.BookType
+import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.databinding.FragmentBookshelf1Binding
 import io.legado.app.help.config.AppConfig
-import io.legado.app.lib.theme.accentColor
+import io.legado.app.lib.theme.applyUiTitleTypeface
 import io.legado.app.lib.theme.primaryColor
-import io.legado.app.ui.book.group.GroupEditDialog
 import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.main.bookshelf.BaseBookshelfFragment
 import io.legado.app.ui.main.bookshelf.style1.books.BooksFragment
+import io.legado.app.ui.widget.ExpandableTagSelector
+import io.legado.app.ui.widget.RoundedTagBarView
+import io.legado.app.utils.PopupMenuAction
+import io.legado.app.utils.applyStatusBarPadding
 import io.legado.app.utils.isCreated
+import io.legado.app.utils.observeEvent
 import io.legado.app.utils.setEdgeEffectColor
-import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.showPopupMenu
+import io.legado.app.utils.startActivity
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
-import kotlin.collections.set
 
-/**
- * 书架界面
- */
-class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1),
-    TabLayout.OnTabSelectedListener,
-    SearchView.OnQueryTextListener {
+class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1) {
 
     constructor(position: Int) : this() {
         val bundle = Bundle()
@@ -44,118 +44,362 @@ class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1)
 
     private val binding by viewBinding(FragmentBookshelf1Binding::bind)
     private val adapter by lazy { TabFragmentPageAdapter(childFragmentManager) }
-    private val tabLayout: TabLayout by lazy {
-        binding.titleBar.findViewById(R.id.tab_layout)
-    }
-    private val bookGroups = mutableListOf<BookGroup>()
+    private val primaryGroups = mutableListOf<BookGroup>()
+    private val secondaryGroups = mutableListOf<BookGroup>()
     private val fragmentMap = hashMapOf<Long, BooksFragment>()
-    override val groupId: Long get() = selectedGroup?.groupId ?: 0
+    private var secondaryGroupIds = emptyList<Long>()
+    private var selectedSecondaryGroupId = 0L
+    private val groupBooksCache = hashMapOf<Long, List<Book>>()
+    private var currentGroupIndex = 0
+
+    override val groupId: Long get() = selectedPrimaryGroup?.groupId ?: BookGroup.IdPrimaryAll
 
     override val books: List<Book>
-        get() {
-            val fragment = fragmentMap[groupId]
-            return fragment?.getBooks() ?: emptyList()
-        }
+        get() = fragmentMap[selectedSecondaryGroupId]?.getBooks() ?: emptyList()
 
     override var onlyUpdateRead = false
+
+    private val selectedPrimaryGroup: BookGroup?
+        get() = primaryGroups.getOrNull(currentGroupIndex)
+
     override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
-        setSupportToolbar(binding.titleBar.toolbar)
         initView()
         initBookGroupData()
     }
 
-    private val selectedGroup: BookGroup?
-        get() = bookGroups.getOrNull(tabLayout.selectedTabPosition)
-
     private fun initView() {
+        binding.root.applyStatusBarPadding()
         binding.viewPagerBookshelf.setEdgeEffectColor(primaryColor)
-        tabLayout.isTabIndicatorFullWidth = false
-        tabLayout.tabMode = TabLayout.MODE_SCROLLABLE
-        tabLayout.setSelectedTabIndicatorColor(requireContext().accentColor)
-        tabLayout.setupWithViewPager(binding.viewPagerBookshelf)
+        binding.btnMore.setOnClickListener {
+            showBookshelfMenu(it)
+        }
+        updateSearchButtonVisibility()
+        binding.btnSearch.setOnClickListener {
+            startActivity<SearchActivity>()
+        }
+        binding.llTitleSelect.setOnClickListener {
+            showGroupSwitchMenu(it)
+        }
+        binding.tabBarGlassView.visibility = View.GONE
+        binding.tabBarShellOverlay.visibility = View.GONE
+        binding.tabIndicatorContainer.visibility = View.GONE
+        binding.btnMoreGlassView.visibility = View.GONE
+        binding.btnMoreShellOverlay.visibility = View.GONE
+        binding.btnMore.setBackgroundResource(R.drawable.bg_more_icon_button_clear)
+        val iconColor = ContextCompat.getColor(requireContext(), R.color.primaryText)
+        binding.btnMore.setColorFilter(iconColor)
+        binding.ivBookshelfTitleArrow.setColorFilter(iconColor)
+        ExpandableTagSelector.configureExpandButton(binding.btnSecondaryTagsExpand)
+        binding.btnSecondaryTagsExpand.setOnClickListener {
+            showSecondaryGroupSelector()
+        }
+        binding.tabLayout.setOnTagClickListener { index ->
+            val secondaryGroupId = secondaryGroupIds.getOrNull(index) ?: BookGroup.IdAll
+            if (secondaryGroupId == selectedSecondaryGroupId) {
+                selectedPrimaryGroup?.let { group ->
+                    fragmentMap[secondaryGroupId]?.let { fragment ->
+                        val label = secondaryGroupName(secondaryGroupId)
+                        toastOnUi("${group.groupName} / $label(${fragment.getBooksCount()})")
+                    }
+                }
+            } else {
+                switchToSecondaryGroup(index, smooth = true)
+            }
+        }
+        binding.tabLayout.setOnTagLongClickListener { index ->
+            switchToSecondaryGroup(index, smooth = true)
+            true
+        }
         binding.viewPagerBookshelf.offscreenPageLimit = 1
+        binding.viewPagerBookshelf.swipeEnabled = AppConfig.bottomBarLayoutMode != "sidebar"
         binding.viewPagerBookshelf.adapter = adapter
+        binding.viewPagerBookshelf.addOnPageChangeListener(
+            object : androidx.viewpager.widget.ViewPager.SimpleOnPageChangeListener() {
+                override fun onPageSelected(position: Int) {
+                    val secondaryGroupId = secondaryGroupIds.getOrNull(position) ?: return
+                    selectedSecondaryGroupId = secondaryGroupId
+                    updateOnlyUpdateRead()
+                    binding.tabLayout.setSelectedIndex(position, smooth = true)
+                }
+            }
+        )
+        updateHeaderTitle()
     }
 
-    override fun onQueryTextSubmit(query: String?): Boolean {
-        SearchActivity.start(requireContext(), query)
-        return false
-    }
-
-    override fun onQueryTextChange(newText: String?): Boolean {
-        return false
+    override fun onResume() {
+        super.onResume()
+        binding.viewPagerBookshelf.swipeEnabled = AppConfig.bottomBarLayoutMode != "sidebar"
     }
 
     @Synchronized
     override fun upGroup(data: List<BookGroup>) {
-        if (data.isEmpty()) {
-            appDb.bookGroupDao.enableGroup(BookGroup.IdAll)
+        val newPrimaryGroups = buildPrimaryGroups()
+        val newSecondaryGroups = buildSecondaryGroups(data)
+        if (newPrimaryGroups != primaryGroups || newSecondaryGroups != secondaryGroups) {
+            primaryGroups.clear()
+            primaryGroups.addAll(newPrimaryGroups)
+            secondaryGroups.clear()
+            secondaryGroups.addAll(newSecondaryGroups)
+            rebuildSecondaryGroupIds()
+            adapter.notifyDataSetChanged()
+            selectSavedGroup()
         } else {
-            if (data != bookGroups) {
-                bookGroups.clear()
-                bookGroups.addAll(data)
-                adapter.notifyDataSetChanged()
-                selectLastTab()
-                for (i in 0 until adapter.count) {
-                    tabLayout.getTabAt(i)?.view?.setOnLongClickListener {
-                        showDialogFragment(GroupEditDialog(bookGroups[i]))
-                        true
-                    }
-                }
-            }
+            renderSecondaryGroups()
         }
+        updateHeaderTitle()
     }
 
     override fun upSort() {
         adapter.notifyDataSetChanged()
     }
 
-    private fun selectLastTab() {
-        tabLayout.post {
-            tabLayout.removeOnTabSelectedListener(this)
-            tabLayout.getTabAt(AppConfig.saveTabPosition)?.select()
-            tabLayout.addOnTabSelectedListener(this)
-        }
-    }
-
-    override fun onTabReselected(tab: TabLayout.Tab) {
-        selectedGroup?.let { group ->
-            fragmentMap[group.groupId]?.let {
-                toastOnUi("${group.groupName}(${it.getBooksCount()})")
+    private fun selectSavedGroup() {
+        binding.viewPagerBookshelf.post {
+            if (primaryGroups.isEmpty()) {
+                binding.tabLayout.submitItems(emptyList(), -1)
+                binding.btnSecondaryTagsExpand.visibility = View.GONE
+                updateHeaderTitle()
+                return@post
             }
+            val target = AppConfig.saveTabPosition.coerceIn(0, primaryGroups.lastIndex)
+            switchToPrimaryGroup(target)
         }
-    }
-
-    override fun onTabUnselected(tab: TabLayout.Tab) = Unit
-
-    override fun onTabSelected(tab: TabLayout.Tab) {
-        AppConfig.saveTabPosition = tab.position
     }
 
     override fun gotoTop() {
-        fragmentMap[groupId]?.gotoTop()
+        fragmentMap[selectedSecondaryGroupId]?.gotoTop()
+    }
+
+    override fun onSearchPlacementChanged() {
+        updateSearchButtonVisibility()
+    }
+
+    private fun updateSearchButtonVisibility() {
+        binding.btnSearchContainer.visibility =
+            if (AppConfig.moveSearchToBookshelf) View.VISIBLE else View.GONE
+    }
+
+    private fun updateHeaderTitle() {
+        binding.tvBookshelfTitle.text = selectedPrimaryGroup?.groupName ?: getString(R.string.bookshelf)
+        binding.tvBookshelfTitle.applyUiTitleTypeface(requireContext())
+    }
+
+    fun onBooksChanged(groupId: Long, books: List<Book>) {
+        groupBooksCache[groupId] = books
+        if (groupId != this.groupId) return
+        renderSecondaryGroups()
+    }
+
+    private fun renderSecondaryGroups() {
+        if (!isAdded) return
+        val oldSecondaryGroupIds = secondaryGroupIds
+        rebuildSecondaryGroupIds()
+        if (oldSecondaryGroupIds != secondaryGroupIds) {
+            adapter.notifyDataSetChanged()
+        }
+        if (selectedSecondaryGroupId !in secondaryGroupIds) {
+            selectedSecondaryGroupId = firstSecondaryGroupId()
+        }
+        if (oldSecondaryGroupIds != secondaryGroupIds) {
+            val selectedIndex = secondaryGroupIds.indexOf(selectedSecondaryGroupId)
+                .takeIf { it >= 0 } ?: 0
+            binding.viewPagerBookshelf.setCurrentItem(selectedIndex, false)
+        }
+        binding.tabLayout.submitItems(
+            secondaryGroupIds.map {
+                RoundedTagBarView.Item(secondaryGroupName(it), showFullText = true)
+            },
+            secondaryGroupIds.indexOf(selectedSecondaryGroupId).takeIf { it >= 0 } ?: 0
+        )
+        binding.btnSecondaryTagsExpand.visibility =
+            if (secondaryGroupIds.size >= ExpandableTagSelector.EXPAND_THRESHOLD) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+    }
+
+    private fun switchToSecondaryGroup(index: Int, smooth: Boolean) {
+        val secondaryGroupId = secondaryGroupIds.getOrNull(index) ?: return
+        selectSecondaryGroup(secondaryGroupId, smooth)
+    }
+
+    private fun selectSecondaryGroup(secondaryGroupId: Long, smooth: Boolean) {
+        val index = secondaryGroupIds.indexOf(secondaryGroupId).takeIf { it >= 0 } ?: return
+        selectedSecondaryGroupId = secondaryGroupId
+        updateOnlyUpdateRead()
+        binding.tabLayout.setSelectedIndex(index, smooth = smooth)
+        binding.viewPagerBookshelf.setCurrentItem(index, smooth)
+    }
+
+    private fun showSecondaryGroupSelector() {
+        if (secondaryGroupIds.size < ExpandableTagSelector.EXPAND_THRESHOLD) return
+        val selectedIndex = secondaryGroupIds.indexOf(selectedSecondaryGroupId)
+        ExpandableTagSelector.show(
+            context = requireContext(),
+            title = getString(R.string.select),
+            items = secondaryGroupIds.mapIndexed { index, groupId ->
+                ExpandableTagSelector.GridItem(
+                    text = secondaryGroupName(groupId),
+                    selected = index == selectedIndex,
+                    value = index
+                )
+            }
+        ) { index ->
+            switchToSecondaryGroup(index, smooth = true)
+        }
+    }
+
+    private fun secondaryGroupName(groupId: Long): String {
+        return secondaryGroups.firstOrNull { it.groupId == groupId }?.groupName
+            ?: when (groupId) {
+                BookGroup.IdAll -> getString(R.string.bookshelf_tag_all)
+                BookGroup.IdLocal -> getString(R.string.local)
+                BookGroup.IdUngrouped -> getString(R.string.no_group)
+                BookGroup.IdError -> getString(R.string.update_book_fail)
+                else -> getString(R.string.bookshelf_tag_all)
+            }
+    }
+
+    private fun showGroupSwitchMenu(anchor: View) {
+        if (primaryGroups.isEmpty()) return
+        val selectedId = selectedPrimaryGroup?.groupId
+        val actions = primaryGroups.mapIndexed { index, group ->
+            val prefix = if (group.groupId == selectedId) "✓" else ""
+            PopupMenuAction(prefix + group.groupName) {
+                switchToPrimaryGroup(index)
+            }
+        }
+        anchor.showPopupMenu(actions)
+    }
+
+    private fun switchToPrimaryGroup(index: Int) {
+        if (index !in primaryGroups.indices) return
+        val lastSecondaryGroupId = selectedSecondaryGroupId
+        currentGroupIndex = index
+        AppConfig.saveTabPosition = index
+        fragmentMap.clear()
+        adapter.notifyDataSetChanged()
+        renderSecondaryGroups()
+        val targetSecondaryGroupId = lastSecondaryGroupId.takeIf { it in secondaryGroupIds }
+            ?: firstSecondaryGroupId()
+        selectSecondaryGroup(targetSecondaryGroupId, smooth = false)
+        updateHeaderTitle()
+    }
+
+    private fun firstSecondaryGroupId(): Long {
+        return secondaryGroupIds.firstOrNull() ?: BookGroup.IdAll
+    }
+
+    fun switchToGroupId(targetGroupId: Long) {
+        val primaryIndex = primaryGroups.indexOfFirst { it.groupId == targetGroupId }
+        if (primaryIndex >= 0) {
+            switchToPrimaryGroup(primaryIndex)
+            return
+        }
+        val secondaryIndex = secondaryGroupIds.indexOf(targetGroupId)
+        if (secondaryIndex >= 0) {
+            switchToSecondaryGroup(secondaryIndex, smooth = false)
+        }
+    }
+
+    override fun observeLiveBus() {
+        super.observeLiveBus()
+        observeEvent<String>(EventBus.BOOKSHELF_REFRESH) {
+            renderSecondaryGroups()
+        }
+    }
+
+    private fun rebuildSecondaryGroupIds() {
+        val primaryBooks = groupBooksCache[groupId]
+        val visibleSecondaryGroups = if (primaryBooks == null) {
+            secondaryGroups
+        } else {
+            val userGroupIds = appDb.bookGroupDao.idsSum
+            secondaryGroups.filter { group ->
+                primaryBooks.any { book -> book.isInSecondaryGroup(group.groupId, userGroupIds) }
+            }
+        }
+        secondaryGroupIds = visibleSecondaryGroups
+            .sortedWith(compareBy({ it.order }, { it.groupId }))
+            .map { it.groupId }
+    }
+
+    private fun buildPrimaryGroups(): List<BookGroup> {
+        return BookGroup.primaryGroupIds.map { defaultPrimaryGroup(it) }
+    }
+
+    private fun buildSecondaryGroups(data: List<BookGroup>): List<BookGroup> {
+        return data.filterNot { it.groupId in BookGroup.primaryGroupIds }
+    }
+
+    private fun secondaryGroup(groupId: Long): BookGroup? {
+        return secondaryGroups.firstOrNull { it.groupId == groupId }
+    }
+
+    private fun enableRefreshForSecondaryGroup(groupId: Long): Boolean {
+        return secondaryGroup(groupId)?.enableRefresh ?: true
+    }
+
+    private fun onlyUpdateReadForSecondaryGroup(groupId: Long): Boolean {
+        return secondaryGroup(groupId)?.onlyUpdateRead ?: false
+    }
+
+    private fun bookSortForSecondaryGroup(groupId: Long): Int {
+        return secondaryGroup(groupId)?.getRealBookSort() ?: AppConfig.bookshelfSort
+    }
+
+    private fun updateOnlyUpdateRead() {
+        onlyUpdateRead = onlyUpdateReadForSecondaryGroup(selectedSecondaryGroupId)
+    }
+
+    private fun Book.isInSecondaryGroup(groupId: Long, userGroupIds: Long): Boolean {
+        return when (groupId) {
+            BookGroup.IdAll -> true
+            BookGroup.IdLocal -> type and BookType.local > 0
+            BookGroup.IdAudio -> type and BookType.audio > 0
+            BookGroup.IdImage -> type and BookType.image > 0
+            BookGroup.IdVideo -> type and BookType.video > 0
+            BookGroup.IdError -> type and BookType.updateError > 0
+            BookGroup.IdUngrouped -> userGroupIds and group == 0L && type and BookType.local == 0
+            else -> groupId > 0 && group and groupId > 0
+        }
+    }
+
+    private fun defaultPrimaryGroup(groupId: Long): BookGroup {
+        return BookGroup(
+            groupId = groupId,
+            groupName = when (groupId) {
+                BookGroup.IdNovel -> getString(R.string.novel)
+                BookGroup.IdImage -> getString(R.string.manga)
+                BookGroup.IdAudio -> getString(R.string.audio)
+                BookGroup.IdVideo -> getString(R.string.video)
+                else -> getString(R.string.all)
+            },
+            order = BookGroup.primaryGroupIds.indexOf(groupId)
+        )
     }
 
     private inner class TabFragmentPageAdapter(fm: FragmentManager) :
         FragmentStatePagerAdapter(fm, BEHAVIOR_RESUME_ONLY_CURRENT_FRAGMENT) {
 
         override fun getPageTitle(position: Int): CharSequence {
-            return bookGroups[position].groupName
+            return secondaryGroupName(secondaryGroupIds[position])
         }
 
-        /**
-         * 确定视图位置是否更改时调用
-         * @return POSITION_NONE 已更改,刷新视图. POSITION_UNCHANGED 未更改,不刷新视图
-         */
         override fun getItemPosition(any: Any): Int {
             val fragment = any as BooksFragment
             val position = fragment.position
-            val group = bookGroups.getOrNull(position)
-            if (fragment.groupId != group?.groupId) {
+            val primaryGroup = selectedPrimaryGroup
+            val secondaryGroupId = secondaryGroupIds.getOrNull(position)
+            if (fragment.groupId != primaryGroup?.groupId ||
+                fragment.secondaryGroupId != secondaryGroupId
+            ) {
                 return POSITION_NONE
             }
-            val bookSort = group.getRealBookSort()
-            fragment.setEnableRefresh(group.enableRefresh)
+            val bookSort = bookSortForSecondaryGroup(fragment.secondaryGroupId)
+            fragment.setEnableRefresh(enableRefreshForSecondaryGroup(fragment.secondaryGroupId))
+            fragment.setOnlyUpdateRead(onlyUpdateReadForSecondaryGroup(fragment.secondaryGroupId))
             if (fragment.bookSort != bookSort) {
                 fragment.upBookSort(bookSort)
             }
@@ -163,26 +407,33 @@ class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1)
         }
 
         override fun getItem(position: Int): Fragment {
-            val group = bookGroups[position]
-            onlyUpdateRead = group.onlyUpdateRead
-            return BooksFragment(position, group)
+            val group = selectedPrimaryGroup ?: defaultPrimaryGroup(BookGroup.IdPrimaryAll)
+            val secondaryGroupId = secondaryGroupIds.getOrNull(position) ?: BookGroup.IdAll
+            if (secondaryGroupId == selectedSecondaryGroupId) {
+                updateOnlyUpdateRead()
+            }
+            return BooksFragment(
+                position,
+                group,
+                secondaryGroupId,
+                bookSortForSecondaryGroup(secondaryGroupId),
+                enableRefreshForSecondaryGroup(secondaryGroupId),
+                onlyUpdateReadForSecondaryGroup(secondaryGroupId)
+            )
         }
 
         override fun getCount(): Int {
-            return bookGroups.size
+            return secondaryGroupIds.size
         }
 
         override fun instantiateItem(container: ViewGroup, position: Int): Any {
             var fragment = super.instantiateItem(container, position) as BooksFragment
-            val group = bookGroups[position]
-            /**
-             * Activity recreate 会复用之前的 Fragment，不正确的需要重新创建
-             */
+            val secondaryGroupId = secondaryGroupIds.getOrNull(position) ?: BookGroup.IdAll
             if (fragment.isCreated && getItemPosition(fragment) == POSITION_NONE) {
                 destroyItem(container, position, fragment)
                 fragment = super.instantiateItem(container, position) as BooksFragment
             }
-            fragmentMap[group.groupId] = fragment
+            fragmentMap[secondaryGroupId] = fragment
             return fragment
         }
 

@@ -12,7 +12,6 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatSpinner
@@ -37,18 +36,22 @@ import io.legado.app.databinding.ItemFilletCompleteTextBinding
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.source.clearExploreKindsCache
 import io.legado.app.help.source.exploreKinds
+import io.legado.app.lib.theme.applyUiBodyTypefaceDeep
 import io.legado.app.lib.theme.accentColor
+import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.login.SourceLoginJsExtensions
 import io.legado.app.ui.widget.dialog.TextDialog
 import io.legado.app.ui.widget.text.AccentTextView
 import io.legado.app.utils.InfoMap
+import io.legado.app.utils.PopupMenuAction
 import io.legado.app.utils.activity
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.gone
 import io.legado.app.utils.removeLastElement
 import io.legado.app.utils.setSelectionSafely
 import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.showPopupMenu
 import io.legado.app.utils.startActivity
 import io.legado.app.utils.visible
 import kotlinx.coroutines.CoroutineScope
@@ -529,28 +532,34 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
 
     @Synchronized
     private fun getFlexboxChild(flexbox: FlexboxLayout): TextView {
-        return if (recycler.isEmpty()) {
+        return (if (recycler.isEmpty()) {
             ItemFilletTextBinding.inflate(inflater, flexbox, false).root
         } else {
             recycler.removeLastElement()
+        }).apply {
+            typeface = context.uiTypeface()
         }
     }
 
     @Synchronized
     private fun getFlexboxChildText(flexbox: FlexboxLayout): AutoCompleteTextView {
-        return if (textRecycler.isEmpty()) {
+        return (if (textRecycler.isEmpty()) {
             ItemFilletCompleteTextBinding.inflate(inflater, flexbox, false).root
         } else {
             textRecycler.removeLastElement()
+        }).apply {
+            typeface = context.uiTypeface()
         }
     }
 
     @Synchronized
     private fun getFlexboxChildSelect(flexbox: FlexboxLayout): LinearLayout {
-        return if (selectRecycler.isEmpty()) {
+        return (if (selectRecycler.isEmpty()) {
             ItemFilletSelectorSingleBinding.inflate(inflater, flexbox, false).root
         } else {
             selectRecycler.removeLastElement()
+        }).apply {
+            applyUiBodyTypefaceDeep(context.uiTypeface())
         }
     }
 
@@ -625,6 +634,17 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
         }
     }
 
+    fun reloadExplore() {
+        val sources = getItems()
+        sourceKinds.clear()
+        callBack.scope.launch {
+            withContext(IO) {
+                sources.forEach { it.clearExploreKindsCache() }
+            }
+            notifyDataSetChanged()
+        }
+    }
+
     private fun refreshExplore(source: BookSourcePart, position: Int, binding: ItemFindBookBinding) {
         binding.rotateLoading.visible()
         Coroutine.async(callBack.scope) {
@@ -639,26 +659,32 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
 
     private fun showMenu(binding: ItemFindBookBinding, position: Int): Boolean {
         val source = getItem(position) ?: return true
-        val popupMenu = PopupMenu(context, binding.llTitle)
-        popupMenu.inflate(R.menu.explore_item)
-        popupMenu.menu.findItem(R.id.menu_login).isVisible = source.hasLoginUrl
-        popupMenu.setOnMenuItemClickListener {
-            when (it.itemId) {
-                R.id.menu_edit -> callBack.editSource(source.bookSourceUrl)
-                R.id.menu_top -> callBack.toTop(source)
-                R.id.menu_search -> callBack.searchBook(source)
-                R.id.menu_login -> context.startActivity<SourceLoginActivity> {
-                    putExtra("type", "bookSource")
-                    putExtra("key", source.bookSourceUrl)
-                }
-
-                R.id.menu_refresh -> refreshExplore(source, position, binding)
-
-                R.id.menu_del -> callBack.deleteSource(source)
+        val actions = buildList {
+            add(PopupMenuAction(context.getString(R.string.edit)) {
+                callBack.editSource(source.bookSourceUrl)
+            })
+            add(PopupMenuAction(context.getString(R.string.to_top)) {
+                callBack.toTop(source)
+            })
+            if (source.hasLoginUrl) {
+                add(PopupMenuAction(context.getString(R.string.login)) {
+                    context.startActivity<SourceLoginActivity> {
+                        putExtra("type", "bookSource")
+                        putExtra("key", source.bookSourceUrl)
+                    }
+                })
             }
-            true
+            add(PopupMenuAction(context.getString(R.string.search)) {
+                callBack.searchBook(source)
+            })
+            add(PopupMenuAction(context.getString(R.string.refresh)) {
+                refreshExplore(source, position, binding)
+            })
+            add(PopupMenuAction(context.getString(R.string.delete)) {
+                callBack.deleteSource(source)
+            })
         }
-        popupMenu.show()
+        binding.llTitle.showPopupMenu(actions)
         return true
     }
 

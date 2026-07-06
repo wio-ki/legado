@@ -22,6 +22,7 @@ import io.legado.app.R
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.theme.elevation
 import io.legado.app.lib.theme.primaryColor
+import io.legado.app.lib.theme.applyUiToolbarTypeface
 import io.legado.app.lib.theme.transparentNavBar
 import io.legado.app.utils.activity
 import io.legado.app.utils.setOnApplyWindowInsetsListenerCompat
@@ -43,6 +44,7 @@ class TitleBar @JvmOverloads constructor(
         set(title) {
             if (toolbar.title != title) {
                 toolbar.title = title
+                post { applyTitleTypeface() }
             }
         }
 
@@ -51,6 +53,7 @@ class TitleBar @JvmOverloads constructor(
         set(subtitle) {
             if (toolbar.subtitle != subtitle) {
                 toolbar.subtitle = subtitle
+                post { applyTitleTypeface() }
             }
         }
 
@@ -158,6 +161,7 @@ class TitleBar @JvmOverloads constructor(
                 inflate(context, a.getResourceId(R.styleable.TitleBar_contentLayout, 0), this)
             }
         }
+        applyTitleTypeface()
 
         if (!isInEditMode) {
 //            if (fitStatusBar) {
@@ -198,6 +202,7 @@ class TitleBar @JvmOverloads constructor(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         attachToActivity()
+        post { applyTitleTypeface() }
     }
 
     fun setNavigationOnClickListener(clickListener: ((View) -> Unit)) {
@@ -206,10 +211,17 @@ class TitleBar @JvmOverloads constructor(
 
     fun setTitle(titleId: Int) {
         toolbar.setTitle(titleId)
+        post { applyTitleTypeface() }
     }
 
     fun setSubTitle(subtitleId: Int) {
         toolbar.setSubtitle(subtitleId)
+        post { applyTitleTypeface() }
+    }
+
+    private fun applyTitleTypeface() {
+        if (isInEditMode) return
+        toolbar.applyUiToolbarTypeface(context)
     }
 
     fun setTitleTextColor(@ColorInt color: Int) {

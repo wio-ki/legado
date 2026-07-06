@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import androidx.appcompat.widget.PopupMenu
 import androidx.core.view.indices
 import androidx.fragment.app.activityViewModels
 import androidx.fragment.app.viewModels
@@ -11,6 +12,7 @@ import androidx.lifecycle.LiveData
 import io.legado.app.R
 import io.legado.app.base.VMBaseFragment
 import io.legado.app.constant.EventBus
+import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
@@ -19,6 +21,7 @@ import io.legado.app.databinding.DialogEditTextBinding
 import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
+import io.legado.app.utils.applyUiMenuStyle
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.book.cache.CacheActivity
 import io.legado.app.ui.book.group.GroupManageDialog
@@ -33,6 +36,7 @@ import io.legado.app.ui.widget.dialog.WaitDialog
 import io.legado.app.utils.checkByIndex
 import io.legado.app.utils.getCheckedIndex
 import io.legado.app.utils.isAbsUrl
+import io.legado.app.utils.observeEvent
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.readText
 import io.legado.app.utils.sendToClip
@@ -90,6 +94,32 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
 
     override fun onCompatCreateOptionsMenu(menu: Menu) {
         menuInflater.inflate(R.menu.main_bookshelf, menu)
+        if (AppConfig.moveSearchToBookshelf) {
+            menu.add(0, R.id.menu_search, 0, R.string.search).apply {
+                setIcon(R.drawable.ic_search)
+                setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+            }
+        }
+    }
+
+    protected open fun onSearchPlacementChanged() {
+        supportToolbar?.menu?.let { menu ->
+            menu.clear()
+            onCompatCreateOptionsMenu(menu)
+            menu.applyUiMenuStyle(requireContext())
+        }
+    }
+
+    protected fun showBookshelfMenu(anchor: View) {
+        PopupMenu(requireContext(), anchor).apply {
+            inflate(R.menu.main_bookshelf)
+            menu.applyUiMenuStyle(requireContext())
+            setOnMenuItemClickListener {
+                onCompatOptionsItemSelected(it)
+                true
+            }
+            show()
+        }
     }
 
     override fun onCompatOptionsItemSelected(item: MenuItem) {
@@ -137,6 +167,9 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
     abstract fun upSort()
 
     override fun observeLiveBus() {
+        observeEvent<Boolean>(PreferKey.moveSearchToBookshelf) {
+            onSearchPlacementChanged()
+        }
         viewModel.addBookProgressLiveData.observe(this) { count ->
             if (count < 0) {
                 waitDialog.dismiss()

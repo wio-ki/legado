@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-sdk tools:overrideLibrary="com.qmdeve.liquidglass" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
@@ -26,6 +28,7 @@
         android:name=".App"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="${app_name}"
         android:networkSecurityConfig="@xml/network_security_config"
         android:requestLegacyExternalStorage="true"
@@ -35,7 +38,8 @@
         <!-- 主入口 -->
         <activity
             android:name=".ui.welcome.WelcomeActivity"
-            android:exported="true">
+            android:exported="true"
+            android:theme="@style/AppTheme.Welcome">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -47,7 +51,8 @@
             android:name=".ui.welcome.Launcher1"
             android:enabled="false"
             android:exported="true"
-            android:icon="@mipmap/launcher1">
+            android:icon="@mipmap/launcher1"
+            android:theme="@style/AppTheme.Welcome">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -59,7 +64,8 @@
             android:name=".ui.welcome.Launcher2"
             android:enabled="false"
             android:exported="true"
-            android:icon="@mipmap/launcher2">
+            android:icon="@mipmap/launcher2"
+            android:theme="@style/AppTheme.Welcome">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -71,7 +77,8 @@
             android:name=".ui.welcome.Launcher3"
             android:enabled="false"
             android:exported="true"
-            android:icon="@mipmap/launcher3">
+            android:icon="@mipmap/launcher3"
+            android:theme="@style/AppTheme.Welcome">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -83,7 +90,8 @@
             android:name=".ui.welcome.Launcher4"
             android:enabled="false"
             android:exported="true"
-            android:icon="@mipmap/launcher4">
+            android:icon="@mipmap/launcher4"
+            android:theme="@style/AppTheme.Welcome">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -95,7 +103,8 @@
             android:name=".ui.welcome.Launcher5"
             android:enabled="false"
             android:exported="true"
-            android:icon="@mipmap/launcher5">
+            android:icon="@mipmap/launcher5"
+            android:theme="@style/AppTheme.Welcome">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -107,7 +116,21 @@
             android:name=".ui.welcome.Launcher6"
             android:enabled="false"
             android:exported="true"
-            android:icon="@mipmap/launcher6">
+            android:icon="@mipmap/launcher6"
+            android:theme="@style/AppTheme.Welcome">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- 图标7 -->
+        <activity
+            android:name=".ui.welcome.Launcher7"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/launcher7"
+            android:theme="@style/AppTheme.Welcome">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -153,9 +176,15 @@
         <activity
             android:name=".ui.book.info.BookInfoActivity"
             android:launchMode="singleTop" />
+        <activity
+            android:name=".ui.book.toc.BookTocLoadingActivity"
+            android:launchMode="standard" />
         <!-- 书籍信息编辑 -->
         <activity
             android:name=".ui.book.info.edit.BookInfoEditActivity"
+            android:launchMode="singleTask" />
+        <activity
+            android:name=".ui.main.bookshelf.BookshelfTagManageActivity"
             android:launchMode="singleTask" />
         <!-- 音频播放界面 -->
         <activity
@@ -206,6 +235,20 @@
         <activity
             android:name=".ui.config.ConfigActivity"
             android:launchMode="standard" />
+        <activity
+            android:name=".ui.config.ThemeManageActivity"
+            android:launchMode="standard" />
+        <activity
+            android:name=".ui.config.NavigationBarManageActivity"
+            android:launchMode="standard" />
+        <activity
+            android:name=".ui.image.ImageCropActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/AppTheme.Light" />
+        <activity
+            android:name=".ui.main.ai.AiChatActivity"
+            android:launchMode="standard"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
         <!-- 搜索界面 -->
         <activity
             android:name=".ui.book.search.SearchActivity"
@@ -292,6 +335,9 @@
         <!-- 缓存界面 -->
         <activity
             android:name=".ui.book.cache.CacheActivity"
+            android:launchMode="singleTop" />
+        <activity
+            android:name=".ui.book.cache.CacheManageActivity"
             android:launchMode="singleTop" />
         <!-- WebView界面 -->
         <activity
@@ -509,6 +555,29 @@
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
+        </receiver>
+        <receiver
+            android:name=".ui.book.cache.AudioCacheActionReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".receiver.ReadGoalWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/read_goal_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".receiver.ReadRankWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/read_rank_widget_info" />
         </receiver>
 
         <provider

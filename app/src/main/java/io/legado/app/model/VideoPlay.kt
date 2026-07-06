@@ -12,7 +12,9 @@ import androidx.core.content.edit
 import com.shuyu.gsyvideoplayer.listener.GSYMediaPlayerListener
 import com.shuyu.gsyvideoplayer.utils.CommonUtil
 import com.shuyu.gsyvideoplayer.video.StandardGSYVideoPlayer
+import com.shuyu.gsyvideoplayer.video.base.GSYBaseVideoPlayer
 import io.legado.app.R
+import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.SourceType
@@ -20,22 +22,35 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookProgress
+import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.ReadRecentBook
+import io.legado.app.data.entities.ReadRecord
 import io.legado.app.data.entities.RssReadRecord
 import io.legado.app.data.entities.RssSource
 import io.legado.app.data.entities.RssStar
 import io.legado.app.exception.ContentEmptyException
+import io.legado.app.help.AppWebDav
 import io.legado.app.help.CacheManager
+import io.legado.app.help.ReadRecordDailyHelper
 import io.legado.app.help.book.getDanmaku
 import io.legado.app.help.book.update
+import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.help.exoplayer.ExoPlayerHelper
+import io.legado.app.help.globalExecutor
 import io.legado.app.help.gsyVideo.ExoVideoManager
 import io.legado.app.help.gsyVideo.ExoVideoManager.Companion.FULLSCREEN_ID
 import io.legado.app.help.gsyVideo.FloatingPlayer
 import io.legado.app.help.gsyVideo.VideoPlayer
+import io.legado.app.help.http.addHeaders
+import io.legado.app.help.http.okHttpClient
 import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.analyzeRule.RuleDataInterface
 import io.legado.app.model.rss.Rss
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.ui.about.ReadRecordWidgetStore
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.NetworkUtils
@@ -48,16 +63,34 @@ import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Request
 import splitties.init.appCtx
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 object VideoPlay : CoroutineScope by MainScope(){
     private const val VIDEO_POS_NAME = "video_pos_" //单链接播放进度
     private const val VIDEO_POS_SAVE_TIME = 60 * 60 * 24 * 20 //20天
     private var needClearTemp = true //需要清理缓存
     private const val VIDEO_TEMP_PATH = "video_temp"
+    private const val CHAPTER_LINK_CACHE_TTL = 30 * 60 * 1000L
+    private const val VIDEO_SEAMLESS_PRELOAD_DURATION_MS = 15L * 1000
+    private const val VIDEO_NEXT_PRELOAD_DURATION_MS = 2L * 60 * 1000
     private val videoTempFile by lazy { File(FileUtils.getCachePath(), VIDEO_TEMP_PATH) }
+    private data class CachedPlayLink(
+        val playUrl: String,
+        val headers: Map<String, String>,
+        val mediaUrl: String,
+        val createdAt: Long
+    )
+    private val chapterLinkCache = ConcurrentHashMap<String, CachedPlayLink>()
+    private val preloadingKeys = ConcurrentHashMap.newKeySet<String>()
+    private val videoPreloadingKeys = ConcurrentHashMap.newKeySet<String>()
+    private val preloadMutex = Mutex()
 
     const val VIDEO_PREF_NAME = "video_config"
 
@@ -118,6 +151,8 @@ object VideoPlay : CoroutineScope by MainScope(){
     var rssStar: RssStar? = null
     /**  订阅历史记录,收藏优先  **/
     var rssRecord: RssReadRecord? = null
+    private val readRecord = ReadRecord()
+    var readStartTime: Long = System.currentTimeMillis()
     /**  弹幕相关  **/
     var danmakuFile: File? = null
     var danmakuStr: String? = null
@@ -133,26 +168,23 @@ object VideoPlay : CoroutineScope by MainScope(){
         val player = player.getCurrentPlayer()
         if (singleUrl) {
             val mUrl = videoUrl ?: return
+            setResolvingLoading(player, true)
             Coroutine.async(loadScope, IO) {
                 CacheManager.getLong(VIDEO_POS_NAME + mUrl)?.let {
                     player.seekOnStart = it
                 }
                 inBookshelf = true
-                val analyzeUrl = AnalyzeUrl(
-                    mUrl,
-                    source = source,
-                    ruleData = book,
-                    chapter = null
-                )
+                val playLink = preparePlayableLink(resolvePlayLink(mUrl, source, book))
                 withContext(Main) {
-                    player.mapHeadData = analyzeUrl.headerMap
-                    val url = analyzeUrl.url
-                    player.setUp(url, false, File(appCtx.externalCache, "exoplayer"), videoTitle)
+                    setResolvingLoading(player, false)
+                    player.mapHeadData = playLink.headers.toMutableMap()
+                    player.setUp(playLink.playUrl, false, File(appCtx.externalCache, "exoplayer"), displayTitle())
                     if (autoPlay) {
                         player.startPlayLogic()
                     }
                 }
             }.onError {
+                setResolvingLoading(player, false)
                 AppLog.put("加载视频链接失败", it, true)
             }
             return
@@ -166,18 +198,16 @@ object VideoPlay : CoroutineScope by MainScope(){
             }
             val ruleContent = s.ruleContent
             if (ruleContent.isNullOrBlank()) {
+                setResolvingLoading(player, true)
                 Coroutine.async(loadScope, IO) {
                     val mUrl = rssArticle.link
                     videoUrl = mUrl
-                    val analyzeUrl = AnalyzeUrl(
-                        mUrl,
-                        source = source,
-                        ruleData = rssArticle
-                    )
+                    val playLink = preparePlayableLink(resolvePlayLink(mUrl, source, rssArticle))
                     withContext(Main) {
-                        player.mapHeadData = analyzeUrl.headerMap
+                        setResolvingLoading(player, false)
+                        player.mapHeadData = playLink.headers.toMutableMap()
                         player.setUp(
-                            analyzeUrl.url,
+                            playLink.playUrl,
                             false,
                             File(appCtx.externalCache, "exoplayer"),
                             rssArticle.title
@@ -187,9 +217,11 @@ object VideoPlay : CoroutineScope by MainScope(){
                         }
                     }
                 }.onError {
+                    setResolvingLoading(player, false)
                     AppLog.put("加载订阅源视频链接失败", it, true)
                 }
             } else {
+                setResolvingLoading(player, true)
                 Rss.getContent(loadScope, rssArticle, ruleContent, s)
                     .onSuccess(IO) { content ->
                         val content = content.trim()
@@ -204,20 +236,17 @@ object VideoPlay : CoroutineScope by MainScope(){
                             NetworkUtils.getAbsoluteURL(rssArticle.link, content)
                         }
                         videoUrl = mUrl
-                        val analyzeUrl = AnalyzeUrl(
-                            mUrl,
-                            source = source,
-                            ruleData = rssArticle
-                        )
-                        val playUrl = analyzeUrl.url
+                        val playLink = preparePlayableLink(resolvePlayLink(mUrl, source, rssArticle))
                         withContext(Main) {
-                            player.mapHeadData = analyzeUrl.headerMap
-                            player.setUp(playUrl, false, File(appCtx.externalCache, "exoplayer"), rssArticle.title)
+                            setResolvingLoading(player, false)
+                            player.mapHeadData = playLink.headers.toMutableMap()
+                            player.setUp(playLink.playUrl, false, File(appCtx.externalCache, "exoplayer"), rssArticle.title)
                             if (autoPlay) {
                                 player.startPlayLogic()
                             }
                         }
                     }.onError {
+                        setResolvingLoading(player, false)
                         AppLog.put("加载订阅源为链接的正文失败", it, true)
                     }
             }
@@ -248,42 +277,258 @@ object VideoPlay : CoroutineScope by MainScope(){
             appCtx.toastOnUi("未找到章节")
             return
         }
-        WebBook.getContent(loadScope, source as BookSource, book, chapter)
-            .onSuccess(IO) { content ->
-                val content = content.trim()
-                val mUrl = if (content.isEmpty()) {
-                    throw ContentEmptyException("正文为空")
-                } else if (content.startsWith("<")) { //当作mpd文本
-                    val name = MD5Utils.md5Encode(content) + ".mpd"
-                    val file = FileUtils.createFileIfNotExist(videoTempFile,name)
-                    file.writeText(content)
-                    Uri.fromFile(file).toString()
-                } else {
-                    content
-                }
-                videoUrl = mUrl
-                val analyzeUrl = AnalyzeUrl(
-                    mUrl,
-                    source = source,
-                    ruleData = book,
-                    chapter = chapter
-                )
-                when (val danmaku = chapter.getDanmaku()) {
-                    is String -> danmakuStr = danmaku
-                    is File -> danmakuFile = danmaku
-                }
-                val playUrl = analyzeUrl.url
-                withContext(Main) {
-                    player.mapHeadData = analyzeUrl.headerMap
-                    player.setUp(playUrl, false, File(appCtx.externalCache, "exoplayer"), chapter.title)
-                    if (autoPlay) {
-                        player.startPlayLogic()
-                    }
-                }
-            }.onError {
-                AppLog.put("获取资源链接出错\n$it", it, true)
+        setResolvingLoading(player, true)
+        val chapterSource = source as BookSource
+        val chapterCacheKey = buildChapterCacheKey(chapterSource, book, chapter)
+        Coroutine.async(loadScope, IO) {
+            val playableLink = resolveChapterPlayableLink(chapterSource, book, chapter)
+            videoUrl = playableLink.mediaUrl
+            when (val danmaku = chapter.getDanmaku()) {
+                is String -> danmakuStr = danmaku
+                is File -> danmakuFile = danmaku
             }
-        isLoading = false
+            val playUrl = playableLink.playUrl
+            if (chapter.resourceUrl != playUrl) {
+                chapter.resourceUrl = playUrl
+                appDb.bookChapterDao.update(chapter)
+            }
+            chapterLinkCache[chapterCacheKey] = playableLink
+            withContext(Main) {
+                setResolvingLoading(player, false)
+                player.mapHeadData = playableLink.headers.toMutableMap()
+                player.setUp(playUrl, false, ExoPlayerHelper.videoBookCacheDir(book), displayTitle(book, chapter))
+                if (autoPlay) {
+                    player.startPlayLogic()
+                }
+                setupSeamlessTransitionListener()
+            }
+        }.onError {
+            setResolvingLoading(player, false)
+            AppLog.put("获取资源链接出错\n$it", it, true)
+        }.onFinally {
+            isLoading = false
+        }
+    }
+
+    private fun setResolvingLoading(player: GSYBaseVideoPlayer, show: Boolean) {
+        (player as? VideoPlayer)?.showResolvingLoading(show)
+    }
+
+    fun refreshCurrentChapter(player: StandardGSYVideoPlayer) {
+        saveRead(videoManager.currentPosition.toInt())
+        clearCurrentChapterPlayLink()
+        videoUrl = null
+        startPlay(player)
+    }
+
+    fun clearCurrentChapterPlayLink() {
+        val chapter = chapter ?: return
+        val book = book ?: return
+        val source = source as? BookSource ?: return
+        clearChapterPlayLink(buildChapterCacheKey(source, book, chapter))
+    }
+
+    fun clearChapterPlayLink(cacheKey: String?): Boolean {
+        if (cacheKey.isNullOrBlank()) return false
+        chapterLinkCache.remove(cacheKey)
+        val book = book ?: return true
+        val source = source as? BookSource ?: return true
+        val chapter = toc?.firstOrNull {
+            buildChapterCacheKey(source, book, it) == cacheKey
+        } ?: return true
+        if (chapter.resourceUrl != null) {
+            chapter.resourceUrl = null
+            Coroutine.async(loadScope, IO) {
+                appDb.bookChapterDao.update(chapter)
+            }
+        }
+        return true
+    }
+
+    private fun buildChapterCacheKey(source: BookSource, book: Book, chapter: BookChapter): String {
+        return "${source.getKey()}|${book.bookUrl}|${chapter.url}"
+    }
+
+    private fun preloadNextEpisode(source: BookSource, book: Book) {
+        val nextChapter = episodes?.getOrNull(chapterInVolumeIndex + 1) ?: return
+        val nextKey = buildChapterCacheKey(source, book, nextChapter)
+        cancelObsoletePreloads(nextKey)
+        if (!preloadingKeys.add(nextKey)) return
+        Coroutine.async(loadScope, IO) {
+            preloadMutex.withLock {
+                if (!preloadingKeys.contains(nextKey)) return@withLock
+                try {
+                    chapterLinkCache[nextKey]?.takeIf {
+                            System.currentTimeMillis() - it.createdAt <= CHAPTER_LINK_CACHE_TTL
+                        }?.let { cachedLink ->
+                            val playableLink = preparePlayableLink(cachedLink, nextKey) {
+                                resolveChapterLink(source, book, nextChapter)
+                            }
+                            chapterLinkCache[nextKey] = playableLink
+                            preloadVideoWindowAwait(nextKey, playableLink.playUrl, playableLink.headers, ExoPlayerHelper.videoBookCacheDir(book))
+                            if (!preloadingKeys.contains(nextKey)) return@withLock
+                            withContext(Main) {
+                                queueNextEpisode(nextKey, playableLink)
+                            }
+                            if (!preloadingKeys.contains(nextKey)) return@withLock
+                            preloadVideoWindow(nextKey, playableLink.playUrl, playableLink.headers, ExoPlayerHelper.videoBookCacheDir(book))
+                            return@withLock
+                        }
+                    val cachedLink = resolveChapterLink(source, book, nextChapter)
+                        ?: return@withLock
+                    val playableLink = preparePlayableLink(cachedLink, nextKey) {
+                        resolveChapterLink(source, book, nextChapter)
+                    }
+                    chapterLinkCache[nextKey] = playableLink
+                    preloadVideoWindowAwait(nextKey, playableLink.playUrl, playableLink.headers, ExoPlayerHelper.videoBookCacheDir(book))
+                    if (!preloadingKeys.contains(nextKey)) return@withLock
+                    withContext(Main) {
+                        queueNextEpisode(nextKey, playableLink)
+                    }
+                    if (!preloadingKeys.contains(nextKey)) return@withLock
+                    preloadVideoWindow(nextKey, playableLink.playUrl, playableLink.headers, ExoPlayerHelper.videoBookCacheDir(book))
+                } catch (_: Throwable) {
+                } finally {
+                    preloadingKeys.remove(nextKey)
+                }
+            }
+        }
+    }
+
+    private suspend fun preparePlayableLink(
+        candidate: CachedPlayLink,
+        cacheKey: String? = null,
+        refreshLink: (suspend () -> CachedPlayLink?)? = null
+    ): CachedPlayLink {
+        if (isPlayLinkReachable(candidate)) {
+            return candidate
+        }
+        cacheKey?.let(::clearChapterPlayLink)
+        return refreshLink?.invoke() ?: candidate
+    }
+
+    private fun resolvePlayLink(
+        mediaUrl: String,
+        source: BaseSource?,
+        ruleData: RuleDataInterface?,
+        chapter: BookChapter? = null
+    ): CachedPlayLink {
+        val analyzeUrl = AnalyzeUrl(
+            mediaUrl,
+            source = source,
+            ruleData = ruleData,
+            chapter = chapter
+        )
+        return CachedPlayLink(
+            playUrl = analyzeUrl.url,
+            headers = analyzeUrl.headerMap.toMap(),
+            mediaUrl = mediaUrl,
+            createdAt = System.currentTimeMillis()
+        )
+    }
+
+    private suspend fun resolveChapterPlayableLink(
+        source: BookSource,
+        book: Book,
+        chapter: BookChapter
+    ): CachedPlayLink {
+        val chapterCacheKey = buildChapterCacheKey(source, book, chapter)
+        chapter.resourceUrl
+            ?.takeIf { ExoPlayerHelper.isVideoCached(it, book) }
+            ?.let { resourceUrl ->
+                val resourceLink = CachedPlayLink(
+                    playUrl = resourceUrl,
+                    headers = emptyMap(),
+                    mediaUrl = resourceUrl,
+                    createdAt = System.currentTimeMillis()
+                )
+                return preparePlayableLink(resourceLink, chapterCacheKey) {
+                    resolveChapterLink(source, book, chapter)
+                }
+            }
+        chapterLinkCache[chapterCacheKey]?.takeIf {
+            System.currentTimeMillis() - it.createdAt <= CHAPTER_LINK_CACHE_TTL
+        }?.let { cached ->
+            return preparePlayableLink(cached, chapterCacheKey) {
+                resolveChapterLink(source, book, chapter)
+            }
+        }
+        val resolvedLink = resolveChapterLink(source, book, chapter)
+            ?: throw ContentEmptyException("正文为空")
+        return preparePlayableLink(resolvedLink, chapterCacheKey) {
+            resolveChapterLink(source, book, chapter)
+        }
+    }
+
+    private suspend fun resolveChapterLink(
+        source: BookSource,
+        book: Book,
+        chapter: BookChapter
+    ): CachedPlayLink? {
+        val content = WebBook.getContentAwait(source, book, chapter).trim()
+        return resolveChapterLink(source, book, chapter, content)
+    }
+
+    private fun resolveChapterLink(
+        source: BookSource,
+        book: Book,
+        chapter: BookChapter,
+        content: String
+    ): CachedPlayLink? {
+        val content = content.trim()
+        if (content.isEmpty()) return null
+        val mUrl = if (content.startsWith("<")) {
+            val name = MD5Utils.md5Encode(content) + ".mpd"
+            val file = FileUtils.createFileIfNotExist(videoTempFile, name)
+            file.writeText(content)
+            Uri.fromFile(file).toString()
+        } else {
+            content
+        }
+        return resolvePlayLink(mUrl, source, book, chapter)
+    }
+
+    private fun isPlayLinkReachable(link: CachedPlayLink): Boolean {
+        return isPlayLinkReachable(link.playUrl, link.headers)
+    }
+
+    private fun isPlayLinkReachable(
+        playUrl: String,
+        headers: Map<String, String>
+    ): Boolean {
+        if (!playUrl.startsWith("http://", true) &&
+            !playUrl.startsWith("https://", true)
+        ) {
+            return true
+        }
+        val client = okHttpClient.newBuilder()
+            .callTimeout(8, TimeUnit.SECONDS)
+            .build()
+        return try {
+            val headRequest = Request.Builder().apply {
+                url(playUrl)
+                addHeaders(headers)
+                head()
+            }.build()
+            client.newCall(headRequest).execute().use { response ->
+                if (response.isSuccessful || response.isRedirect) {
+                    return true
+                }
+                if (response.code != 405) {
+                    return false
+                }
+            }
+            val rangeRequest = Request.Builder().apply {
+                url(playUrl)
+                addHeaders(headers)
+                addHeader("Range", "bytes=0-0")
+            }.build()
+            client.newCall(rangeRequest).execute().use { response ->
+                response.isSuccessful || response.isRedirect
+            }
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     /**
@@ -346,6 +591,7 @@ object VideoPlay : CoroutineScope by MainScope(){
      * 暂停播放
      */
     fun onPause() {
+        upReadTime()
         if (videoManager.listener() != null) {
             videoManager.listener().onVideoPause()
         }
@@ -355,6 +601,7 @@ object VideoPlay : CoroutineScope by MainScope(){
      * 恢复播放
      */
     fun onResume() {
+        markReadStart()
         if (videoManager.listener() != null) {
             videoManager.listener().onVideoResume()
         }
@@ -366,6 +613,7 @@ object VideoPlay : CoroutineScope by MainScope(){
      * @param seek 是否产生seek动作,直播设置为false
      */
     fun onResume(seek: Boolean) {
+        markReadStart()
         if (videoManager.listener() != null) {
             videoManager.listener().onVideoResume(seek)
         }
@@ -395,6 +643,34 @@ object VideoPlay : CoroutineScope by MainScope(){
         sSwitchVideo = null
     }
 
+    fun markReadStart() {
+        readStartTime = System.currentTimeMillis()
+    }
+
+    fun upReadTime() {
+        val book = book ?: return
+        if (!inBookshelf || !AppConfig.enableReadRecord) {
+            markReadStart()
+            return
+        }
+        val now = System.currentTimeMillis()
+        val delta = now - readStartTime
+        readStartTime = now
+        if (delta <= 0L) return
+        if (readRecord.bookName != book.name || readRecord.deviceId != AppConst.androidId) {
+            readRecord.deviceId = AppConst.androidId
+            readRecord.bookName = book.name
+            readRecord.readTime = appDb.readRecordDao.getReadTime(AppConst.androidId, book.name) ?: 0L
+        }
+        readRecord.readTime += delta
+        readRecord.lastRead = now
+        val record = readRecord.copy()
+        globalExecutor.execute {
+            appDb.readRecordDao.insert(record)
+            ReadRecordDailyHelper.record(delta, now)
+        }
+    }
+
     fun stopLoading() {
         loadScope.coroutineContext.cancelChildren()
     }
@@ -418,11 +694,15 @@ object VideoPlay : CoroutineScope by MainScope(){
             }
             appDb.bookDao.getBook(it) ?: appDb.searchBookDao.getSearchBook(it)?.toBook()
         }?.also { b ->
-            chapterInVolumeIndex = b.chapterInVolumeIndex
-            durVolumeIndex = b.durVolumeIndex
             durChapterPos = b.durChapterPos
+            restoreVideoProgress(b)
             source = appDb.bookSourceDao.getBookSource(b.origin)
             SourceCallBack.callBackBook(SourceCallBack.START_READ, source as BookSource?, b, chapter)
+            readRecord.deviceId = AppConst.androidId
+            readRecord.bookName = b.name
+            readRecord.readTime = appDb.readRecordDao.getReadTime(AppConst.androidId, b.name) ?: 0L
+            readRecord.lastRead = System.currentTimeMillis()
+            markReadStart()
         }
         upEpisodes()
         if (source == null) {
@@ -441,6 +721,30 @@ object VideoPlay : CoroutineScope by MainScope(){
             }
         }
         return true
+    }
+
+    fun restoreVideoProgress(book: Book) {
+        val toc = toc.orEmpty()
+        if (toc.isEmpty()) {
+            durVolumeIndex = book.durVolumeIndex
+            chapterInVolumeIndex = book.chapterInVolumeIndex
+            return
+        }
+        val targetIndex = book.durChapterIndex.coerceIn(0, toc.lastIndex)
+        if (volumes.isEmpty()) {
+            durVolumeIndex = 0
+            chapterInVolumeIndex = targetIndex
+            return
+        }
+        val exactVolumeIndex = volumes.indexOfFirst { it.index == targetIndex }
+        if (exactVolumeIndex >= 0) {
+            durVolumeIndex = exactVolumeIndex
+            chapterInVolumeIndex = 0
+            return
+        }
+        durVolumeIndex = volumes.indexOfLast { it.index < targetIndex }.coerceAtLeast(0)
+        val volumeIndex = volumes.getOrNull(durVolumeIndex)?.index ?: -1
+        chapterInVolumeIndex = (targetIndex - volumeIndex - 1).coerceAtLeast(0)
     }
 
     fun upEpisodes() {
@@ -472,11 +776,209 @@ object VideoPlay : CoroutineScope by MainScope(){
             appCtx.toastOnUi("已播放完")
             return false
         }
+        upReadTime()
         chapterInVolumeIndex = index
         saveRead(0)
+        markReadStart()
         startPlay(player)
         postEvent(EventBus.UP_VIDEO_INFO, arrayListOf(1)) //更新选集视图
         return true
+    }
+
+    fun queuePreparedNextEpisode() {
+        val source = source as? BookSource ?: return
+        val book = book ?: return
+        preloadNextEpisode(source, book)
+    }
+
+    private fun setupSeamlessTransitionListener() {
+        if (source !is BookSource || episodes.isNullOrEmpty()) return
+        videoManager.setOnMediaKeyTransitionListener { key ->
+            onSeamlessEpisodeChanged(key)
+        }
+    }
+
+    private fun queueNextEpisode(key: String, cached: CachedPlayLink) {
+        val source = source as? BookSource ?: return
+        val book = book ?: return
+        val nextChapter = episodes?.getOrNull(chapterInVolumeIndex + 1) ?: return
+        if (key != buildChapterCacheKey(source, book, nextChapter)) return
+        setupSeamlessTransitionListener()
+        videoManager.appendNext(key, cached.playUrl, cached.headers)
+    }
+
+    private fun onSeamlessEpisodeChanged(key: String) {
+        val source = source as? BookSource ?: return
+        val book = book ?: return
+        val episodes = episodes ?: return
+        val newIndex = episodes.indexOfFirst { chapter ->
+            buildChapterCacheKey(source, book, chapter) == key
+        }
+        if (newIndex < 0 || newIndex == chapterInVolumeIndex) return
+        upReadTime()
+        chapterInVolumeIndex = newIndex
+        chapter = episodes[newIndex]
+        val cached = chapterLinkCache[key]
+        videoUrl = cached?.mediaUrl ?: cached?.playUrl ?: videoUrl
+        durChapterPos = 0
+        when (val danmaku = chapter?.getDanmaku()) {
+            is String -> {
+                danmakuStr = danmaku
+                danmakuFile = null
+            }
+            is File -> {
+                danmakuFile = danmaku
+                danmakuStr = null
+            }
+            else -> {
+                danmakuStr = null
+                danmakuFile = null
+            }
+        }
+        saveRead(0)
+        markReadStart()
+        (videoManager.listener() as? VideoPlayer)?.onSeamlessEpisodeChanged(displayTitle())
+        postEvent(EventBus.UP_VIDEO_INFO, arrayListOf(1))
+        preloadNextEpisode(source, book)
+    }
+
+    fun displayTitle(
+        book: Book? = this.book,
+        chapter: BookChapter? = this.chapter
+    ): String? {
+        val chapterTitle = activityTitle(chapter)
+        val bookName = book?.name?.takeIf { it.isNotBlank() }
+        return when {
+            bookName != null && chapterTitle != null -> "$bookName - $chapterTitle"
+            chapterTitle != null -> chapterTitle
+            else -> videoTitle
+        }
+    }
+
+    private fun preloadVideoWindow(
+        key: String,
+        playUrl: String,
+        headers: Map<String, String>,
+        cacheDir: File? = null,
+        durationMs: Long = VIDEO_NEXT_PRELOAD_DURATION_MS
+    ) {
+        if (playUrl.isBlank()) return
+        val preloadKey = "video:$key"
+        if (!videoPreloadingKeys.add(preloadKey)) return
+        Coroutine.async(loadScope, IO) {
+            try {
+                ExoPlayerHelper.preloadVideoWindow(
+                    ExoPlayerHelper.MediaRequest(playUrl, headers),
+                    cacheDir = cacheDir,
+                    durationMs = durationMs
+                ) {
+                    !videoPreloadingKeys.contains(preloadKey)
+                }
+            } catch (e: Throwable) {
+                AppLog.putDebug("视频预加载失败: ${e.localizedMessage ?: e.javaClass.simpleName}")
+            } finally {
+                videoPreloadingKeys.remove(preloadKey)
+            }
+        }
+    }
+
+    private fun cancelObsoletePreloads(activeKey: String) {
+        val activeVideoKey = "video:$activeKey"
+        preloadingKeys.removeIf { it != activeKey }
+        videoPreloadingKeys.removeIf { it != activeVideoKey }
+    }
+
+    private fun preloadVideoWindowAwait(
+        key: String,
+        playUrl: String,
+        headers: Map<String, String>,
+        cacheDir: File? = null
+    ): Long {
+        if (playUrl.isBlank()) return 0L
+        return try {
+            ExoPlayerHelper.preloadVideoWindow(
+                ExoPlayerHelper.MediaRequest(playUrl, headers),
+                cacheDir = cacheDir,
+                durationMs = VIDEO_SEAMLESS_PRELOAD_DURATION_MS
+            ) {
+                !preloadingKeys.contains(key)
+            }
+        } catch (e: Throwable) {
+            AppLog.putDebug("视频首段预加载失败: ${e.localizedMessage ?: e.javaClass.simpleName}")
+            0L
+        }
+    }
+
+    fun activityTitle(chapter: BookChapter? = this.chapter): String? {
+        return chapter?.title?.takeIf { it.isNotBlank() } ?: videoTitle
+    }
+
+    fun setProgress(progress: BookProgress, player: StandardGSYVideoPlayer? = null) {
+        val toc = toc ?: return
+        if (progress.durChapterIndex !in toc.indices) {
+            return
+        }
+        if (volumes.isEmpty()) {
+            durVolumeIndex = 0
+            chapterInVolumeIndex = progress.durChapterIndex
+        } else {
+            val volumeIndex = volumes.indexOfLast { it.index < progress.durChapterIndex }
+                .coerceAtLeast(0)
+            durVolumeIndex = volumeIndex
+            durVolume = volumes.getOrNull(volumeIndex)
+            chapterInVolumeIndex = (progress.durChapterIndex - (durVolume?.index ?: -1) - 1)
+                .coerceAtLeast(0)
+        }
+        durChapterPos = progress.durChapterPos
+        upEpisodes()
+        chapter = episodes?.getOrNull(chapterInVolumeIndex)
+        videoTitle = chapter?.title ?: progress.durChapterTitle
+        saveRead(progress.durChapterPos)
+        postEvent(EventBus.UP_VIDEO_INFO, arrayListOf(1))
+        player?.let {
+            startPlay(it)
+        }
+    }
+
+    fun uploadProgress(successAction: (() -> Unit)? = null) {
+        book?.let {
+            Coroutine.async {
+                AppWebDav.uploadBookProgress(it) {
+                    successAction?.invoke()
+                }
+                it.update()
+            }
+        }
+    }
+
+    fun syncProgress(
+        newProgressAction: ((progress: BookProgress) -> Unit)? = null,
+        uploadSuccessAction: (() -> Unit)? = null,
+        syncSuccessAction: (() -> Unit)? = null,
+    ) {
+        if (!AppConfig.syncBookProgress) return
+        val book = book ?: return
+        Coroutine.async {
+            AppWebDav.getBookProgress(book)
+        }.onError {
+            AppLog.put("拉取视频进度失败", it)
+        }.onSuccess { progress ->
+            when (progress?.compareWith(book)) {
+                null,
+                BookProgressComparison.LOCAL_NEWER -> {
+                    Coroutine.async {
+                        AppWebDav.uploadBookProgress(BookProgress(book), uploadSuccessAction)
+                        book.update()
+                    }
+                }
+                BookProgressComparison.REMOTE_NEWER -> {
+                    newProgressAction?.invoke(progress)
+                }
+                BookProgressComparison.SAME -> {
+                    syncSuccessAction?.invoke()
+                }
+            }
+        }
     }
 
     fun saveRead(durPos: Int? = null) {
@@ -494,8 +996,9 @@ object VideoPlay : CoroutineScope by MainScope(){
         val durVolumeIndex = durVolumeIndex
         val chapterInVolumeIndex = chapterInVolumeIndex
         val source = source
-        val volumes = volumes
+        val volumes = volumes.toList()
         val durVolume = durVolume
+        val toc = toc
         Coroutine.async {
             book?.let { book ->
                 book.lastCheckCount = 0
@@ -512,6 +1015,8 @@ object VideoPlay : CoroutineScope by MainScope(){
                 book.durChapterTitle = chapter?.title
                 SourceCallBack.callBackBook(SourceCallBack.SAVE_READ, source as BookSource?, book, chapter, durTime.toString())
                 book.update()
+                appDb.readRecentBookDao.insert(ReadRecentBook(book.bookUrl, durTime))
+                ReadRecordWidgetStore.updateRecentSnapshot(book, durTime)
             }
             rssStar?.let {
                 it.durPos = durPos
@@ -523,7 +1028,7 @@ object VideoPlay : CoroutineScope by MainScope(){
                 videoTitle = it.title
                 appDb.rssReadRecordDao.update(it)
             }
-            postEvent(EventBus.VIDEO_SUB_TITLE, videoTitle ?: appCtx.getString(R.string.data_loading))
+            postEvent(EventBus.VIDEO_SUB_TITLE, activityTitle() ?: appCtx.getString(R.string.data_loading))
         }
     }
 

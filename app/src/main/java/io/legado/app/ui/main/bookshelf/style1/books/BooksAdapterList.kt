@@ -12,6 +12,7 @@ import io.legado.app.help.book.isLocal
 import io.legado.app.help.config.AppConfig
 import io.legado.app.utils.invisible
 import io.legado.app.utils.toTimeAgo
+import io.legado.app.utils.visible
 import splitties.views.onLongClick
 
 class BooksAdapterList(
@@ -36,7 +37,8 @@ class BooksAdapterList(
             tvAuthor.text = item.author
             tvRead.text = item.durChapterTitle
             tvLast.text = item.latestChapterTitle
-            ivCover.load(item, false)
+            ivCover.loadThumb(item, false, fragment, lifecycle)
+            ivLocal.visible(AppConfig.showLocalBookIcon && item.isLocal)
             upRefresh(binding, item)
             upLastUpdateTime(binding, item)
         } else {
@@ -48,7 +50,7 @@ class BooksAdapterList(
                         "author" -> tvAuthor.text = item.author
                         "dur" -> tvRead.text = item.durChapterTitle
                         "last" -> tvLast.text = item.latestChapterTitle
-                        "cover" -> ivCover.load(
+                        "cover" -> ivCover.loadThumb(
                             item,
                             false,
                             fragment,
@@ -57,6 +59,7 @@ class BooksAdapterList(
 
                         "refresh" -> upRefresh(binding, item)
                         "lastUpdateTime" -> upLastUpdateTime(binding, item)
+                        "local" -> ivLocal.visible(AppConfig.showLocalBookIcon && item.isLocal)
                     }
                 }
             }

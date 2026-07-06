@@ -7,11 +7,13 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookProgress
+import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.storage.Backup
 import io.legado.app.help.storage.Restore
 import io.legado.app.lib.webdav.Authorization
+import io.legado.app.lib.webdav.ProgressListener
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.lib.webdav.WebDavException
 import io.legado.app.lib.webdav.WebDavFile
@@ -42,6 +44,8 @@ object AppWebDav {
     private val bookProgressUrl get() = "${rootWebDavUrl}bookProgress/"
     private val exportsWebDavUrl get() = "${rootWebDavUrl}books/"
     private val bgWebDavUrl get() = "${rootWebDavUrl}background/"
+    private val themesWebDavUrl get() = "${rootWebDavUrl}themes/"
+    private val navigationBarsWebDavUrl get() = "${rootWebDavUrl}navigationBars/"
 
     var authorization: Authorization? = null
         private set
@@ -84,6 +88,8 @@ object AppWebDav {
                 WebDav(bookProgressUrl, mAuthorization).makeAsDir()
                 WebDav(exportsWebDavUrl, mAuthorization).makeAsDir()
                 WebDav(bgWebDavUrl, mAuthorization).makeAsDir()
+                WebDav(themesWebDavUrl, mAuthorization).makeAsDir()
+                WebDav(navigationBarsWebDavUrl, mAuthorization).makeAsDir()
                 val rootBooksUrl = "${rootWebDavUrl}books/"
                 defaultBookWebDav = RemoteBookWebDav(rootBooksUrl, mAuthorization)
                 authorization = mAuthorization
@@ -119,13 +125,29 @@ object AppWebDav {
     }
 
     @Throws(WebDavException::class)
-    suspend fun restoreWebDav(name: String) {
+    suspend fun restoreWebDav(
+        name: String,
+        onProgress: ProgressListener? = null,
+        onDownloadFinish: (() -> Unit)? = null
+    ) {
+        authorization?.let {
+            downloadBackupToLocal(name, onProgress, onDownloadFinish)
+            Restore.restoreLocked(Backup.backupPath)
+        }
+    }
+
+    @Throws(WebDavException::class)
+    suspend fun downloadBackupToLocal(
+        name: String,
+        onProgress: ProgressListener? = null,
+        onDownloadFinish: (() -> Unit)? = null
+    ) {
         authorization?.let {
             val webDav = WebDav(rootWebDavUrl + name, it)
-            webDav.downloadTo(Backup.zipFilePath, true)
+            webDav.downloadTo(Backup.zipFilePath, true, onProgress)
+            onDownloadFinish?.invoke()
             FileUtils.delete(Backup.backupPath)
             ZipUtils.unZipToPath(File(Backup.zipFilePath), Backup.backupPath)
-            Restore.restoreLocked(Backup.backupPath)
         }
     }
 
@@ -160,12 +182,99 @@ object AppWebDav {
      * @param fileName 备份文件名
      */
     @Throws(Exception::class)
-    suspend fun backUpWebDav(fileName: String) {
+    suspend fun backUpWebDav(fileName: String, onProgress: ProgressListener? = null) {
         if (!NetworkUtils.isAvailable()) return
         authorization?.let {
             val putUrl = "$rootWebDavUrl$fileName"
-            WebDav(putUrl, it).upload(Backup.zipFilePath)
+            WebDav(putUrl, it).upload(Backup.zipFilePath, onProgress = onProgress)
         }
+    }
+
+    suspend fun listThemePackages(isNightTheme: Boolean): List<WebDavFile> {
+        val authorization = authorization ?: return emptyList()
+        if (!NetworkUtils.isAvailable()) return emptyList()
+        val dirUrl = getThemeTypeUrl(isNightTheme)
+        WebDav(dirUrl, authorization).makeAsDir()
+        return WebDav(dirUrl, authorization).listFiles()
+            .filter { !it.isDir && it.displayName.endsWith(".zip", ignoreCase = true) }
+    }
+
+    suspend fun uploadThemePackage(isNightTheme: Boolean, remoteDirName: String, zipFile: File) {
+        val authorization = authorization ?: throw NoStackTraceException("webDav未配置")
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络未连接")
+        val fileName = "${remoteDirName.trimEnd('/').removeSuffix(".zip")}.zip"
+        val typeUrl = getThemeTypeUrl(isNightTheme)
+        WebDav(typeUrl, authorization).makeAsDir()
+        WebDav(typeUrl + fileName, authorization).upload(zipFile)
+    }
+
+    suspend fun uploadCachePackage(fileName: String, zipFile: File) {
+        val authorization = authorization ?: throw NoStackTraceException("webDav未配置")
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络未连接")
+        val safeFileName = UrlUtil.replaceReservedChar(
+            fileName.trimEnd('/').removeSuffix(".zip").normalizeFileName()
+        ).ifBlank { "cache_${System.currentTimeMillis()}" }
+        WebDav(exportsWebDavUrl, authorization).makeAsDir()
+        WebDav(exportsWebDavUrl + safeFileName + ".zip", authorization)
+            .upload(zipFile, "application/zip")
+    }
+
+    suspend fun downloadThemePackage(isNightTheme: Boolean, remoteDirName: String, zipFile: File) {
+        val authorization = authorization ?: throw NoStackTraceException("webDav未配置")
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络未连接")
+        val fileName = "${remoteDirName.trimEnd('/').removeSuffix(".zip")}.zip"
+        zipFile.parentFile?.mkdirs()
+        WebDav(getThemeTypeUrl(isNightTheme) + fileName, authorization)
+            .downloadTo(zipFile.absolutePath, true)
+    }
+
+    suspend fun deleteThemePackage(isNightTheme: Boolean, remoteDirName: String) {
+        val authorization = authorization ?: throw NoStackTraceException("webDav未配置")
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络未连接")
+        val fileName = "${remoteDirName.trimEnd('/').removeSuffix(".zip")}.zip"
+        WebDav(getThemeTypeUrl(isNightTheme) + fileName, authorization).delete()
+    }
+
+    suspend fun listNavigationBarPackages(isNightTheme: Boolean): List<WebDavFile> {
+        val authorization = authorization ?: return emptyList()
+        if (!NetworkUtils.isAvailable()) return emptyList()
+        val dirUrl = getNavigationBarTypeUrl(isNightTheme)
+        WebDav(dirUrl, authorization).makeAsDir()
+        return WebDav(dirUrl, authorization).listFiles()
+            .filter { !it.isDir && it.displayName.endsWith(".zip", ignoreCase = true) }
+    }
+
+    suspend fun uploadNavigationBarPackage(isNightTheme: Boolean, remoteDirName: String, zipFile: File) {
+        val authorization = authorization ?: throw NoStackTraceException("webDav未配置")
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络未连接")
+        val fileName = "${remoteDirName.trimEnd('/').removeSuffix(".zip")}.zip"
+        val typeUrl = getNavigationBarTypeUrl(isNightTheme)
+        WebDav(typeUrl, authorization).makeAsDir()
+        WebDav(typeUrl + fileName, authorization).upload(zipFile)
+    }
+
+    suspend fun downloadNavigationBarPackage(isNightTheme: Boolean, remoteDirName: String, zipFile: File) {
+        val authorization = authorization ?: throw NoStackTraceException("webDav未配置")
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络未连接")
+        val fileName = "${remoteDirName.trimEnd('/').removeSuffix(".zip")}.zip"
+        zipFile.parentFile?.mkdirs()
+        WebDav(getNavigationBarTypeUrl(isNightTheme) + fileName, authorization)
+            .downloadTo(zipFile.absolutePath, true)
+    }
+
+    suspend fun deleteNavigationBarPackage(isNightTheme: Boolean, remoteDirName: String) {
+        val authorization = authorization ?: throw NoStackTraceException("webDav未配置")
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络未连接")
+        val fileName = "${remoteDirName.trimEnd('/').removeSuffix(".zip")}.zip"
+        WebDav(getNavigationBarTypeUrl(isNightTheme) + fileName, authorization).delete()
+    }
+
+    private fun getThemeTypeUrl(isNightTheme: Boolean): String {
+        return themesWebDavUrl + if (isNightTheme) "night/" else "day/"
+    }
+
+    private fun getNavigationBarTypeUrl(isNightTheme: Boolean): String {
+        return navigationBarsWebDavUrl + if (isNightTheme) "night/" else "day/"
     }
 
     /**
@@ -320,10 +429,7 @@ object AppWebDav {
                 return
             }
             getBookProgress(book)?.let { bookProgress ->
-                if (bookProgress.durChapterIndex > book.durChapterIndex
-                    || (bookProgress.durChapterIndex == book.durChapterIndex
-                            && bookProgress.durChapterPos > book.durChapterPos)
-                ) {
+                if (bookProgress.compareWith(book) == BookProgressComparison.REMOTE_NEWER) {
                     book.durChapterIndex = bookProgress.durChapterIndex
                     book.durChapterPos = bookProgress.durChapterPos
                     book.durChapterTitle = bookProgress.durChapterTitle

@@ -1,8 +1,8 @@
 <resources>
     <!--App-->
-    <string name="app_name">閱讀</string>
-    <string name="app_name_a">閱讀·A</string>
-    <string name="receiving_shared_label">閱讀·搜尋</string>
+    <string name="app_name">阅读RR</string>
+    <string name="app_name_a">阅读RR·A</string>
+    <string name="receiving_shared_label">阅读RR·搜索</string>
     <string name="tip_perm_request_storage">閱讀需要存取記憶卡權限，請前往「設定」—「應用程式權限」—打開所需權限</string>
 
     <!--Other-->
@@ -64,8 +64,8 @@
     <string name="book_source_manage">書源管理</string>
     <string name="book_source_manage_desc">建立/匯入/編輯/管理書源</string>
     <string name="setting">設定</string>
-    <string name="theme_setting">主題設定</string>
-    <string name="theme_setting_s">與介面/顏色相關的一些設定</string>
+    <string name="theme_setting">介面設定</string>
+    <string name="theme_setting_s">介面、顏色與顯示相關設定</string>
     <string name="other_setting">其它設定</string>
     <string name="other_setting_s">與功能相關的一些設定</string>
     <string name="about">關於</string>
@@ -75,6 +75,8 @@
     <string name="read_style">閱讀樣式設定</string>
     <string name="version">版本</string>
     <string name="local">本機</string>
+    <string name="manga">漫画</string>
+    <string name="novel">小說</string>
     <string name="search">搜尋</string>
     <string name="origin_format">來源：%s</string>
     <string name="read_dur_progress">最近：%s</string>
@@ -95,7 +97,7 @@
         \u3000\u3000這是一款使用Kotlin全新開發的開源的閱讀軟體，歡迎您的加入。
     </string>
     <string name="app_share_description">
-        閱讀3.0下載網址：\nhttps://github.com/LegadoTeam/legado/releases
+        閱讀RR下載網址：\nhttps://github.com/wio-ki/legado/releases
     </string>
     <string name="version_name">Version %s</string>
     <string name="pt_background_verification">後臺校驗書源</string>
@@ -116,7 +118,7 @@
     <string name="backup_confirmation">確認備份嗎？</string>
     <string name="backup_message">新備份會取代原有備份。\n備份資料夾YueDu</string>
     <string name="restore_confirmation">確認復原嗎？</string>
-    <string name="restore_message">復原書架會覆蓋現有書架。</string>
+    <string name="restore_message">復原書架會覆蓋現有書架</string>
     <string name="backup_success">備份成功</string>
     <string name="backup_fail">備份失敗\n%s</string>
     <string name="on_restore">正在復原</string>
@@ -180,7 +182,6 @@
     <string name="copy_source">複製源</string>
     <string name="paste_source">貼上源</string>
     <string name="source_rule_s">源規則說明</string>
-    <string name="check_update">檢查更新</string>
     <string name="camera_scan">掃描二維碼</string>
     <string name="scan_image">掃描本機圖片</string>
     <string name="rule_summary">規則說明</string>
@@ -235,13 +236,11 @@
     <string name="origin_show">來源：%s</string>
     <string name="import_replace_rule">匯入取代規則</string>
     <string name="import_replace_rule_on_line">匯入線上規則</string>
-    <string name="check_update_interval">檢查更新間隔</string>
     <string name="bookshelf_px_0">按閱讀時間</string>
     <string name="bookshelf_px_1">按更新時間</string>
     <string name="bookshelf_px_2">按書名</string>
     <string name="bookshelf_px_3">手動排序</string>
     <string name="read_type">閱讀方式</string>
-    <string name="compose_type">排版</string>
     <string name="del_select">刪除所選</string>
     <string name="del_msg">是否確認刪除？</string>
     <string name="clear_font">預設字體</string>
@@ -250,6 +249,7 @@
     <string name="find_empty">沒有內容，去書源裡自訂吧！</string>
     <string name="del_all">刪除所有</string>
     <string name="searchHistory">搜尋歷史</string>
+    <string name="search_history_empty">暫無搜尋歷史</string>
     <string name="clear">清除</string>
     <string name="showTitle">正文顯示標題</string>
     <string name="refresh_default">書源同步</string>
@@ -275,7 +275,7 @@
     <string name="join_group">關注：%s</string>
     <string name="copy_complete">已複製</string>
     <string name="bookshelf_management">書架管理</string>
-    <string name="clear_bookshelf_s">這將會刪除所有書籍，請謹慎操作。</string>
+    <string name="clear_bookshelf_s">這將會刪除所有書籍，請謹慎操作</string>
     <string name="search_book_source">搜尋書源</string>
     <string name="search_rss_source">搜尋訂閱源</string>
     <string name="search_book_source_num">搜尋(共%d個書源)</string>
@@ -310,6 +310,8 @@
     <string name="nb_file_add_succeed">成功新增%1$d本書</string>
     <string name="fonts_folder">請將字體檔案放到SD根目錄Fonts資料夾下重新選擇</string>
     <string name="default_font">預設字體</string>
+    <string name="ui_font">介面字體</string>
+    <string name="title_font">標題字體</string>
     <string name="select_font">選擇字體</string>
     <string name="text_size">字號</string>
     <string name="line_size">行距</string>
@@ -334,7 +336,6 @@
     <string name="download_path">內容快取路徑</string>
     <string name="sys_file_picker">系統檔案選擇器</string>
     <string name="new_version">新版本</string>
-    <string name="download_update">下載更新</string>
     <string name="volume_key_page_on_play">朗讀時音量鍵翻頁</string>
     <string name="tip_margin_change">Tip邊距跟隨邊距調整</string>
     <string name="allow_update">允許更新</string>
@@ -525,13 +526,14 @@
     <string name="indent_4">四字元縮排</string>
     <string name="select_folder">選擇資料夾</string>
     <string name="select_file">選擇文件</string>
-    <string name="no_find">沒有發現，可以在書源裡新增。</string>
+    <string name="no_find">沒有發現，可以在書源裡新增</string>
     <string name="restore_default">復原預設</string>
     <string name="set_download_per">自訂快取路徑需要儲存權限</string>
     <string name="black">黑色</string>
     <string name="content_empty">文章內容為空</string>
     <string name="on_change_source">正在換源請等待…</string>
     <string name="chapter_list_empty">目錄列表為空</string>
+    <string name="toc_loading">載入目錄中…</string>
     <string name="text_letter_spacing">字距</string>
 
     <string name="source_tab_base">基本</string>
@@ -685,7 +687,7 @@
     <string name="btn_default_s">預設</string>
     <string name="main_menu">主選單</string>
     <string name="request_permission">點擊授予權限</string>
-    <string name="tip_local_perm_request_storage">閱讀需要存取記憶卡權限，請點擊下方的"授予權限"按鈕，或前往「設定」—「應用權限」—打開所需權限。如果授予權限後仍然不正常，請點擊右上角的「選擇資料夾」，使用系統資料夾選擇器。</string>
+    <string name="tip_local_perm_request_storage">閱讀需要存取記憶卡權限，請點擊下方的"授予權限"按鈕，或前往「設定」—「應用權限」—打開所需權限。如果授予權限後仍然不正常，請點擊右上角的「選擇資料夾」，使用系統資料夾選擇器</string>
     <string name="alouding_disable">全文朗讀中不能朗讀選中文字</string>
     <string name="read_body_to_lh">擴展到瀏海</string>
     <string name="toc_updateing">更新目錄中</string>
@@ -703,9 +705,9 @@
     <string name="source_auto_changing">正在自動換源</string>
     <string name="click_to_apply">點擊加入</string>
     <string name="middle">中</string>
-    <string name="information">訊息</string>
+    <string name="information">標題/頁首/頁尾</string>
     <string name="switchLayout">切換布局</string>
-    <string name="text_font_weight_converter">文章字重轉換</string>
+    <string name="text_font_weight_converter">字重</string>
     <string name="full_screen_gestures_support">全面屏手勢最佳化</string>
     <string name="disable_return_key">禁用返回鍵</string>
 
@@ -790,7 +792,7 @@
     <string name="search_content">全文搜尋</string>
     <string name="rss_source_empty">這裡目前什麼都沒有！</string>
     <string name="explore_empty">目前沒有發現源！</string>
-    <string name="page_key_set_help">將焦點放到輸入框按下物理按鍵會自動輸入鍵值，多個按鍵會自動用英文逗號隔開。</string>
+    <string name="page_key_set_help">將焦點放到輸入框按下物理按鍵會自動輸入鍵值，多個按鍵會自動用英文逗號隔開</string>
     <string name="theme_name">主題名稱</string>
     <string name="auto_clear_expired">自動清除過期搜尋資料</string>
     <string name="auto_clear_expired_summary">超過一天的搜尋資料</string>
@@ -955,6 +957,8 @@
     <string name="scope_content">作用於正文</string>
     <string name="join_qq_channel">加入QQ頻道</string>
     <string name="qq_channel_summary">點擊加入閱讀QQ頻道</string>
+    <string name="join_telegram_channel">加入 Telegram 頻道</string>
+    <string name="telegram_channel_summary">點擊加入閱讀 Telegram 頻道</string>
     <string name="menu_refresh_dur">重新整理目前章節</string>
     <string name="menu_refresh_after">重新整理之後章節</string>
     <string name="menu_refresh_all">重新整理全部章節</string>
@@ -1026,6 +1030,7 @@
     <string name="check_selected_interval">選中所選區間</string>
     <string name="show_add_to_shelf_alert_title">返回時提示放入書架</string>
     <string name="show_add_to_shelf_alert_summary">閱讀未放入書架的書籍在返回時提示放入書架</string>
+    <string name="show_local_book_icon">顯示本機書籍圖示</string>
     <string name="review">段評</string>
     <string name="rule_review_url">段評URL（reviewUrl）</string>
     <string name="rule_avatar">段評發布者大頭貼（avatarRule）</string>
@@ -1049,8 +1054,6 @@
     <string name="ignore_audio_focus_summary">允許與其他應用同時播放音訊</string>
     <string name="refresh_sort">重新整理分類</string>
     <string name="cover_decode_js">封面解密（coverDecodeJs）</string>
-    <string name="net_no_group">網路未分組</string>
-    <string name="local_no_group">本機未分組</string>
     <string name="parallel_export_book">多執行緒匯出</string>
     <string name="progress_bar_behavior">進度條行為</string>
     <string name="source_edit_text_max_line">源編輯框最大行數</string>
@@ -1125,6 +1128,15 @@
     <string name="custom_export">自定義導出</string>
     <string name="file_contains_number">每個文件包含的章節數量</string>
     <string name="export_chapter_index">需要輸出的章節</string>
+    <string name="epub_style">EPUB 樣式</string>
+    <string name="epub_title_color">標題顏色</string>
+    <string name="epub_text_color">正文顏色</string>
+    <string name="epub_font">字體</string>
+    <string name="epub_embed_font">嵌入字體到 EPUB</string>
+    <string name="epub_text_size">正文字號</string>
+    <string name="epub_line_height">行距</string>
+    <string name="epub_paragraph_spacing">段距</string>
+    <string name="epub_paragraph_indent">首行縮排</string>
     <string name="shrink_database">压缩数据库</string>
     <string name="shrink_database_summary">减小数据库文件的大小</string>
     <string name="is_compress">是否压缩</string>
@@ -1170,12 +1182,7 @@
     <string name="start_from">起始日期</string>
     <string name="daily_chapters">日更章數</string>
     <string name="start_chapter">開始篇章</string>
-    <string name="update_to_variant_title">检查更新查找版本</string>
-    <string name="update_to_variant_summary">检查更新时查找其他签名版本</string>
-    <string name="default_version">当前</string>
     <string name="official_version">正式版</string>
-    <string name="beta_release_version">测试版</string>
-    <string name="beta_releaseA_version">共存版</string>
     <string name="stream_read_aloud_audio">流式播放音频</string>
     <string name="stream_read_aloud_audio_summary">即边下边播，网络不好时播放会断断续续，仅TTS源有效</string>
     <string name="pause_read_aloud_while_phone_calls_title">来电期间暂停朗读</string>
@@ -1213,6 +1220,7 @@
     <string name="manga_color_filter">滤镜</string>
     <string name="hide_manga_title">隐藏漫画列表标题</string>
     <string name="refresh_explore">刷新发现</string>
+    <string name="reload_book_source">重載書源</string>
     <string name="padding_display_cutouts">填充刘海区域</string>
     <string name="read_aloud_pause_resume">朗讀暫停/繼續</string>
     <string name="manga_epaper">墨水屏</string>
@@ -1223,4 +1231,12 @@
     <string name="auto_check_new_backup_t">自动检查新备份</string>
     <string name="auto_check_new_backup_s">打开软件时检查是否有新备份，有新备份时提示是否更新</string>
     <string name="sys_image_picker">系统图片选择器</string>
+    <string name="epub_parse_mode">EPUB解析方式</string>
+    <string name="epub_parse_mode_new">新版</string>
+    <string name="epub_parse_mode_classic">經典</string>
+    <string name="export_tab_base">基礎</string>
+    <string name="export_tab_text">文字</string>
+    <string name="export_tab_background">背景</string>
+    <string name="epub_background_color">背景顏色</string>
+    <string name="epub_background_image">背景圖片</string>
 </resources>

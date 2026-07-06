@@ -9,6 +9,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
+import io.legado.app.R
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.dao.BookGroupDao
@@ -19,7 +20,9 @@ import io.legado.app.data.dao.CookieDao
 import io.legado.app.data.dao.DictRuleDao
 import io.legado.app.data.dao.HttpTTSDao
 import io.legado.app.data.dao.KeyboardAssistsDao
+import io.legado.app.data.dao.ReadRecentBookDao
 import io.legado.app.data.dao.ReadRecordDao
+import io.legado.app.data.dao.ReadRecordDailyDao
 import io.legado.app.data.dao.ReplaceRuleDao
 import io.legado.app.data.dao.RssArticleDao
 import io.legado.app.data.dao.RssReadRecordDao
@@ -41,7 +44,9 @@ import io.legado.app.data.entities.Cookie
 import io.legado.app.data.entities.DictRule
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.KeyboardAssist
+import io.legado.app.data.entities.ReadRecentBook
 import io.legado.app.data.entities.ReadRecord
+import io.legado.app.data.entities.ReadRecordDaily
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.entities.RssArticle
 import io.legado.app.data.entities.RssReadRecord
@@ -67,13 +72,15 @@ val appDb by lazy {
 }
 
 @Database(
-    version = 89,
+    version = 92,
     exportSchema = true,
     entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchBook::class, SearchKeyword::class, Cookie::class,
         RssSource::class, Bookmark::class, RssArticle::class, RssReadRecord::class,
-        RssStar::class, TxtTocRule::class, ReadRecord::class, HttpTTS::class, Cache::class,
-        RuleSub::class, DictRule::class, KeyboardAssist::class, Server::class],
+        RssStar::class, TxtTocRule::class, ReadRecord::class, ReadRecordDaily::class,
+        HttpTTS::class, Cache::class,
+        RuleSub::class, DictRule::class, KeyboardAssist::class, Server::class,
+        ReadRecentBook::class],
     views = [BookSourcePart::class],
     autoMigrations = [
         AutoMigration(from = 43, to = 44),
@@ -121,7 +128,8 @@ val appDb by lazy {
         AutoMigration(from = 85, to = 86),
         AutoMigration(from = 86, to = 87),
         AutoMigration(from = 87, to = 88),
-        AutoMigration(from = 88, to = 89)
+        AutoMigration(from = 88, to = 89),
+        AutoMigration(from = 89, to = 90)
     ]
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -141,6 +149,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract val cookieDao: CookieDao
     abstract val txtTocRuleDao: TxtTocRuleDao
     abstract val readRecordDao: ReadRecordDao
+    abstract val readRecordDailyDao: ReadRecordDailyDao
+    abstract val readRecentBookDao: ReadRecentBookDao
     abstract val httpTTSDao: HttpTTSDao
     abstract val cacheDao: CacheDao
     abstract val ruleSubDao: RuleSubDao
@@ -190,33 +200,30 @@ abstract class AppDatabase : RoomDatabase() {
                 """.trimIndent()
                 db.execSQL(insertBookGroupLocalSql)
                 @Language("sql")
-                val insertBookGroupMusicSql = """
-                    insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${BookGroup.IdAudio}, '音频', -8, 1
-                    where not exists (select * from book_groups where groupId = ${BookGroup.IdAudio})
+                val deletePrimaryBookGroupsSql = """
+                    delete from book_groups
+                    where groupId in (${BookGroup.IdImage}, ${BookGroup.IdAudio}, ${BookGroup.IdVideo})
                 """.trimIndent()
-                db.execSQL(insertBookGroupMusicSql)
+                db.execSQL(deletePrimaryBookGroupsSql)
                 @Language("sql")
-                val insertBookGroupNetNoneGroupSql = """
+                val insertBookGroupUngroupedSql = """
                     insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${BookGroup.IdNetNone}, '网络未分组', -7, 1
-                    where not exists (select * from book_groups where groupId = ${BookGroup.IdNetNone})
+                    select ${BookGroup.IdUngrouped}, '${appCtx.getString(R.string.no_group)}', -5, 1
+                    where not exists (select * from book_groups where groupId = ${BookGroup.IdUngrouped})
                 """.trimIndent()
-                db.execSQL(insertBookGroupNetNoneGroupSql)
+                db.execSQL(insertBookGroupUngroupedSql)
                 @Language("sql")
-                val insertBookGroupLocalNoneGroupSql = """
-                    insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${BookGroup.IdLocalNone}, '本地未分组', -6, 0
-                    where not exists (select * from book_groups where groupId = ${BookGroup.IdLocalNone})
-                """.trimIndent()
-                db.execSQL(insertBookGroupLocalNoneGroupSql)
-                @Language("sql")
-                val insertBookGroupVideoSql = """
-                    insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${BookGroup.IdVideo}, '视频', -5, 1
-                    where not exists (select * from book_groups where groupId = ${BookGroup.IdVideo})
+                val updateBookGroupUngroupedSql =
+                    """
+                    update book_groups
+                    set groupName = '${appCtx.getString(R.string.no_group)}'
+                    where groupId = ${BookGroup.IdUngrouped}
+                    and trim(groupName) = ''
                     """.trimIndent()
-                db.execSQL(insertBookGroupVideoSql)
+                db.execSQL(updateBookGroupUngroupedSql)
+                @Language("sql")
+                val deleteBookGroupLocalNoneSql = "delete from book_groups where groupId = -5"
+                db.execSQL(deleteBookGroupLocalNoneSql)
                 @Language("sql")
                 val insertBookGroupErrorSql = """
                     insert into book_groups(groupId, groupName, 'order', show) 

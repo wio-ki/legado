@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Picture
+import android.graphics.Rect
 import android.os.Build
 import android.text.Spanned
 import android.text.style.ImageSpan
@@ -28,8 +29,6 @@ import android.widget.TextView
 import androidx.annotation.ColorInt
 import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.view.menu.MenuPopupHelper
-import androidx.appcompat.widget.PopupMenu
 import androidx.core.graphics.record
 import androidx.core.graphics.withTranslation
 import androidx.core.view.ViewCompat
@@ -47,12 +46,12 @@ import io.legado.app.utils.canvasrecorder.record
 import splitties.systemservices.inputMethodManager
 import splitties.views.bottomPadding
 import splitties.views.topPadding
-import java.lang.reflect.Field
 import androidx.core.graphics.createBitmap
 import androidx.core.text.HtmlCompat
 import androidx.core.view.isVisible
 import androidx.core.text.parseAsHtml
 import androidx.core.view.postDelayed
+import io.legado.app.R
 import io.legado.app.help.TextViewTagHandler
 import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
 import io.noties.markwon.Markwon
@@ -422,17 +421,6 @@ fun TextView.setTextIfNotEqual(charSequence: CharSequence?) {
     }
 }
 
-@SuppressLint("RestrictedApi")
-fun PopupMenu.show(x: Int, y: Int) {
-    kotlin.runCatching {
-        val field: Field = this.javaClass.getDeclaredField("mPopup")
-        field.isAccessible = true
-        (field.get(this) as MenuPopupHelper).show(x, y)
-    }.onFailure {
-        it.printOnDebug()
-    }
-}
-
 fun View.shouldHideSoftInput(event: MotionEvent): Boolean {
     if (this is EditText) {
         val l = intArrayOf(0, 0)
@@ -458,8 +446,67 @@ fun View.applyStatusBarPadding(withInitialPadding: Boolean = false) {
 fun View.applyNavigationBarPadding(withInitialPadding: Boolean = false) {
     val initialPadding = if (withInitialPadding) bottomPadding else 0
     setOnApplyWindowInsetsListenerCompat { _, windowInsets ->
-        bottomPadding = initialPadding + windowInsets.navigationBarHeight
+        val navigationBarHeight = windowInsets.navigationBarHeight
+        val extraPadding = if (navigationBarHeight > 0) 12.dpToPx() else 0
+        bottomPadding = initialPadding + navigationBarHeight + extraPadding
         windowInsets
+    }
+}
+
+fun View.applyMainBottomBarPadding(
+    withInitialPadding: Boolean = false,
+    usePaddingForRecyclerView: Boolean = false
+) {
+    val initialPadding = if (withInitialPadding) bottomPadding else 0
+    setOnApplyWindowInsetsListenerCompat { _, windowInsets ->
+        val bottomSpace = windowInsets.navigationBarHeight +
+                resources.getDimensionPixelSize(R.dimen.main_content_bottom_bar_padding)
+        if (this is RecyclerView) {
+            if (usePaddingForRecyclerView) {
+                removeMainBottomBarSpaceDecoration()
+                bottomPadding = initialPadding + bottomSpace
+            } else {
+                bottomPadding = initialPadding
+                updateMainBottomBarSpaceDecoration(bottomSpace)
+            }
+        } else {
+            bottomPadding = initialPadding + bottomSpace
+        }
+        windowInsets
+    }
+}
+
+private fun RecyclerView.updateMainBottomBarSpaceDecoration(bottomSpace: Int) {
+    (getTag(R.id.main_bottom_bar_space_decoration) as? MainBottomBarSpaceDecoration)?.let {
+        if (it.bottomSpace != bottomSpace) {
+            it.bottomSpace = bottomSpace
+            invalidateItemDecorations()
+        }
+        return
+    }
+    val decoration = MainBottomBarSpaceDecoration(bottomSpace)
+    addItemDecoration(decoration)
+    setTag(R.id.main_bottom_bar_space_decoration, decoration)
+}
+
+private fun RecyclerView.removeMainBottomBarSpaceDecoration() {
+    (getTag(R.id.main_bottom_bar_space_decoration) as? MainBottomBarSpaceDecoration)?.let {
+        removeItemDecoration(it)
+        setTag(R.id.main_bottom_bar_space_decoration, null)
+    }
+}
+
+private class MainBottomBarSpaceDecoration(var bottomSpace: Int) : RecyclerView.ItemDecoration() {
+    override fun getItemOffsets(
+        outRect: Rect,
+        view: View,
+        parent: RecyclerView,
+        state: RecyclerView.State
+    ) {
+        val position = parent.getChildAdapterPosition(view)
+        if (position != RecyclerView.NO_POSITION && position == state.itemCount - 1) {
+            outRect.bottom = bottomSpace
+        }
     }
 }
 
@@ -507,4 +554,3 @@ fun Spinner.setSelectionSafely(position: Int) {
         setSelection(position.coerceIn(0, count - 1))
     }
 }
-

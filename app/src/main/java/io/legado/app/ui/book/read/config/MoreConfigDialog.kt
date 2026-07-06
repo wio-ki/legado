@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.preference.Preference
 import io.legado.app.R
@@ -39,13 +40,21 @@ class MoreConfigDialog : BasePrefDialogFragment() {
         super.onStart()
         dialog?.window?.run {
             clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            setBackgroundDrawableResource(R.color.background)
+            setBackgroundDrawableResource(android.R.color.transparent)
             decorView.setPadding(0, 0, 0, 0)
             val attr = attributes
             attr.dimAmount = 0.0f
             attr.gravity = Gravity.BOTTOM
             attributes = attr
-            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, 360.dpToPx())
+            val sheetHeight = minOf(
+                (resources.displayMetrics.heightPixels * 0.68f).toInt(),
+                520.dpToPx()
+            ).coerceAtLeast(360.dpToPx())
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, sheetHeight)
+            (activity as? ReadBookActivity)?.postReadAloudFloatingAvoidanceForView(
+                EventBus.FLOATING_AVOID_SOURCE_MORE_CONFIG_DIALOG,
+                view
+            )
         }
     }
 
@@ -55,11 +64,13 @@ class MoreConfigDialog : BasePrefDialogFragment() {
         savedInstanceState: Bundle?
     ): View {
         (activity as ReadBookActivity).bottomDialog++
-        val view = LinearLayout(context)
-        view.setBackgroundColor(requireContext().bottomBackground)
-        view.id = R.id.tag1
-        container?.addView(view)
-        return view
+        return FrameLayout(requireContext()).apply {
+            background = ReaderSheetStyle.topSheetDrawable(ReaderSheetStyle.resolve(requireContext()))
+            clipChildren = true
+            clipToPadding = true
+            clipToOutline = true
+            id = R.id.tag1
+        }
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -74,6 +85,9 @@ class MoreConfigDialog : BasePrefDialogFragment() {
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
         (activity as ReadBookActivity).bottomDialog--
+        (activity as? ReadBookActivity)?.clearReadAloudFloatingAvoidance(
+            EventBus.FLOATING_AVOID_SOURCE_MORE_CONFIG_DIALOG
+        )
     }
 
     class ReadPreferenceFragment : PreferenceFragment(),
@@ -85,6 +99,8 @@ class MoreConfigDialog : BasePrefDialogFragment() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             addPreferencesFromResource(R.xml.pref_config_read)
             upPreferenceSummary(PreferKey.pageTouchSlop, slopSquare.toString())
+            upPreferenceSummary(PreferKey.pageAnimationSpeed, AppConfig.pageAnimationSpeed.toString())
+            upPreferenceSummary(PreferKey.keyPageAnimationSpeed, AppConfig.keyPageAnimationSpeed.toString())
             if (!CanvasRecorderFactory.isSupport) {
                 removePref(PreferKey.optimizeRender)
                 preferenceScreen.removePreferenceRecursively(PreferKey.optimizeRender)
@@ -93,6 +109,10 @@ class MoreConfigDialog : BasePrefDialogFragment() {
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
             super.onViewCreated(view, savedInstanceState)
+            listView.background = null
+            listView.clipToPadding = true
+            listView.overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            listView.setPadding(0, 12.dpToPx(), 0, 24.dpToPx())
             listView.setEdgeEffectColor(primaryColor)
         }
 
@@ -146,6 +166,10 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                 PreferKey.expandTextMenu -> {
                     (activity as? ReadBookActivity)?.textActionMenu?.upMenu()
                 }
+                PreferKey.contentSelectActions,
+                PreferKey.contentSelectDefaultOpen -> {
+                    (activity as? ReadBookActivity)?.textActionMenu?.upMenu()
+                }
 
                 PreferKey.doublePageHorizontal -> {
                     ChapterProvider.upLayout()
@@ -153,9 +177,7 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                 }
 
                 PreferKey.showReadTitleAddition,
-                PreferKey.readBarStyleFollowPage -> {
-                    postEvent(EventBus.UPDATE_READ_ACTION_BAR, true)
-                }
+                PreferKey.readBarStyleFollowPage,
 
                 PreferKey.progressBarBehavior -> {
                     postEvent(EventBus.UP_SEEK_BAR, true)
@@ -183,7 +205,9 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                 "clickRegionalConfig" -> {
                     (activity as? ReadBookActivity)?.showClickRegionalConfig()
                 }
-
+                PreferKey.contentSelectMenuConfig -> {
+                    ContentSelectMenuConfigDialog().show(parentFragmentManager, "contentSelectMenuConfig")
+                }
                 PreferKey.pageTouchSlop -> {
                     NumberPickerDialog(requireContext())
                         .setTitle(getString(R.string.page_touch_slop_dialog_title))
@@ -207,6 +231,50 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                             postEvent(EventBus.UP_CONFIG, arrayListOf(12))
                         }
                 }
+
+                PreferKey.pageAnimationSpeed -> {
+                    NumberPickerDialog(requireContext())
+                        .setTitle(getString(R.string.page_animation_speed_dialog_title))
+                        .setMaxValue(2000)
+                        .setMinValue(0)
+                        .setValue(AppConfig.pageAnimationSpeed)
+                        .setCustomButton(R.string.btn_default_s) {
+                            AppConfig.pageAnimationSpeed = 300
+                            upPreferenceSummary(
+                                PreferKey.pageAnimationSpeed,
+                                AppConfig.pageAnimationSpeed.toString()
+                            )
+                        }
+                        .show {
+                            AppConfig.pageAnimationSpeed = it
+                            upPreferenceSummary(
+                                PreferKey.pageAnimationSpeed,
+                                AppConfig.pageAnimationSpeed.toString()
+                            )
+                        }
+                }
+
+                PreferKey.keyPageAnimationSpeed -> {
+                    NumberPickerDialog(requireContext())
+                        .setTitle(getString(R.string.key_page_animation_speed_dialog_title))
+                        .setMaxValue(2000)
+                        .setMinValue(0)
+                        .setValue(AppConfig.keyPageAnimationSpeed)
+                        .setCustomButton(R.string.btn_default_s) {
+                            AppConfig.keyPageAnimationSpeed = 100
+                            upPreferenceSummary(
+                                PreferKey.keyPageAnimationSpeed,
+                                AppConfig.keyPageAnimationSpeed.toString()
+                            )
+                        }
+                        .show {
+                            AppConfig.keyPageAnimationSpeed = it
+                            upPreferenceSummary(
+                                PreferKey.keyPageAnimationSpeed,
+                                AppConfig.keyPageAnimationSpeed.toString()
+                            )
+                        }
+                }
             }
             return super.onPreferenceTreeClick(preference)
         }
@@ -217,6 +285,10 @@ class MoreConfigDialog : BasePrefDialogFragment() {
             when (preferenceKey) {
                 PreferKey.pageTouchSlop -> preference.summary =
                     getString(R.string.page_touch_slop_summary, value)
+                PreferKey.pageAnimationSpeed -> preference.summary =
+                    getString(R.string.page_animation_speed_value, value)
+                PreferKey.keyPageAnimationSpeed -> preference.summary =
+                    getString(R.string.page_animation_speed_value, value)
             }
         }
 

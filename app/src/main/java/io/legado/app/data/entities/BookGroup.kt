@@ -31,22 +31,30 @@ data class BookGroup(
 
     companion object {
         const val IdRoot = -100L
+        const val IdPrimaryAll = -101L
+        const val IdNovel = -102L
         const val IdAll = -1L
         const val IdLocal = -2L
         const val IdAudio = -3L
-        const val IdNetNone = -4L
-        const val IdLocalNone = -5L
+        const val IdUngrouped = -4L
         const val IdVideo = -6L
+        const val IdImage = -7L
         const val IdError = -11L
+
+        /** 书架 style1 顶部主分类（默认顺序） */
+        val primaryGroupIds = listOf(IdPrimaryAll, IdNovel, IdImage, IdAudio, IdVideo)
+
+        /** 分组管理界面不展示的系统主分类 */
+        val hiddenInGroupManageIds = setOf(IdImage, IdAudio, IdVideo)
     }
 
     fun getManageName(context: Context): String {
         return when (groupId) {
             IdAll -> "$groupName(${context.getString(R.string.all)})"
             IdAudio -> "$groupName(${context.getString(R.string.audio)})"
+            IdImage -> "$groupName(${context.getString(R.string.manga)})"
             IdLocal -> "$groupName(${context.getString(R.string.local)})"
-            IdNetNone -> "$groupName(${context.getString(R.string.net_no_group)})"
-            IdLocalNone -> "$groupName(${context.getString(R.string.local_no_group)})"
+            IdUngrouped -> "$groupName(${context.getString(R.string.no_group)})"
             IdVideo -> "$groupName(${context.getString(R.string.video)})"
             IdError -> "$groupName(${context.getString(R.string.update_book_fail)})"
             else -> groupName

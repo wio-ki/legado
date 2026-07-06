@@ -5,6 +5,7 @@ import android.view.MenuItem
 import android.view.ViewGroup
 import androidx.activity.viewModels
 import androidx.core.os.bundleOf
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import io.legado.app.R
@@ -12,13 +13,15 @@ import io.legado.app.base.VMBaseActivity
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.databinding.ActivityExploreShowBinding
 import io.legado.app.databinding.ViewLoadMoreBinding
-import io.legado.app.ui.book.info.BookInfoActivity
+import io.legado.app.ui.book.SearchBookOpenHelper
 import io.legado.app.ui.widget.number.NumberPickerDialog
 import io.legado.app.ui.widget.recycler.LoadMoreView
 import io.legado.app.ui.widget.recycler.VerticalDivider
 import io.legado.app.utils.applyNavigationBarPadding
-import io.legado.app.utils.startActivity
 import io.legado.app.utils.viewbindingdelegate.viewBinding
+import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 发现列表
@@ -167,10 +170,15 @@ class ExploreShowActivity : VMBaseActivity<ActivityExploreShowBinding, ExploreSh
     }
 
     override fun showBookInfo(book: SearchBook) {
-        startActivity<BookInfoActivity> {
-            putExtra("name", book.name)
-            putExtra("author", book.author)
-            putExtra("bookUrl", book.bookUrl)
+        lifecycleScope.launch {
+            val isVideo = withContext(IO) {
+                SearchBookOpenHelper.isVideoResult(book, viewModel.sourceTypeHint())
+            }
+            if (isVideo) {
+                SearchBookOpenHelper.open(this@ExploreShowActivity, book, true)
+            } else {
+                SearchBookOpenHelper.open(this@ExploreShowActivity, book, false)
+            }
         }
     }
 }

@@ -31,9 +31,11 @@ import io.legado.app.help.http.okHttpClient
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
+import io.legado.app.lib.theme.applyUiBodyTypefaceDeep
 import io.legado.app.lib.theme.bottomBackground
 import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.lib.theme.getSecondaryTextColor
+import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.model.ReadBook
 import io.legado.app.ui.book.read.ReadBookActivity
 import io.legado.app.ui.file.HandleFileContract
@@ -80,6 +82,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
         const val TEXT_COLOR = 121
         const val BG_COLOR = 122
         const val TEXT_ACCENT_COLOR = 123
+        const val READ_MENU_BG_COLOR = 124
     }
 
     private val binding by viewBinding(DialogReadBgTextBinding::bind)
@@ -112,7 +115,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
         super.onStart()
         dialog?.window?.run {
             clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            setBackgroundDrawableResource(R.color.background)
+            setBackgroundDrawableResource(android.R.color.transparent)
             decorView.setPadding(0, 0, 0, 0)
             val attr = attributes
             attr.dimAmount = 0.0f
@@ -140,17 +143,23 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
         val isLight = ColorUtils.isColorLight(bg)
         primaryTextColor = requireContext().getPrimaryTextColor(isLight)
         secondaryTextColor = requireContext().getSecondaryTextColor(isLight)
-        rootView.setBackgroundColor(bg)
+        rootView.background = ReaderSheetStyle.topSheetDrawable(ReaderSheetStyle.resolve(requireContext(), bg))
+        rootView.clipToOutline = true
+        rootView.applyUiBodyTypefaceDeep(requireContext().uiTypeface())
         tvNameTitle.setTextColor(primaryTextColor)
         tvName.setTextColor(secondaryTextColor)
         ivEdit.setColorFilter(secondaryTextColor, PorterDuff.Mode.SRC_IN)
         tvRestore.setTextColor(primaryTextColor)
         swDarkStatusIcon.setTextColor(primaryTextColor)
+        swScrollFollowBg.setTextColor(primaryTextColor)
         ivImport.setColorFilter(primaryTextColor, PorterDuff.Mode.SRC_IN)
         ivExport.setColorFilter(primaryTextColor, PorterDuff.Mode.SRC_IN)
         ivDelete.setColorFilter(primaryTextColor, PorterDuff.Mode.SRC_IN)
         tvBgAlpha.setTextColor(primaryTextColor)
         tvBgImage.setTextColor(primaryTextColor)
+        dsbTextShadow.valueFormat = {
+            if (it == 0) getString(R.string.jf_convert_o) else "$it%"
+        }
         if (ReadBook.book?.isImage == true) {
             spUnderline.isGone = true
         } else {
@@ -165,6 +174,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
                     if (view is android.widget.TextView) {
                         view.setBackgroundColor(bg) // 设置下拉列表项的背景色
                         view.setTextColor(primaryTextColor) // 设置下拉列表项的文本颜色
+                        view.typeface = requireContext().uiTypeface()
                     }
                     return view
                 }
@@ -187,6 +197,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
         recyclerView.adapter = adapter
         adapter.addHeaderView {
             ItemBgImageBinding.inflate(layoutInflater, it, false).apply {
+                root.applyUiBodyTypefaceDeep(requireContext().uiTypeface())
                 tvName.setTextColor(secondaryTextColor)
                 tvName.text = getString(R.string.select_image)
                 ivBg.setImageResource(R.drawable.ic_image)
@@ -207,8 +218,10 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
     private fun initData() = with(ReadBookConfig.durConfig) {
         binding.tvName.text = name.ifBlank { "文字" }
         binding.swDarkStatusIcon.isChecked = curStatusIconDark()
+        binding.swScrollFollowBg.isChecked = curReadScrollFollowBackground()
         binding.spUnderline.setSelectionSafely(underlineMode)
         binding.sbBgAlpha.progress = bgAlpha
+        binding.dsbTextShadow.progress = ReadBookConfig.paperInkStrength
     }
 
     @SuppressLint("InflateParams")
@@ -218,6 +231,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
                 val alertBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
                     editView.hint = "name"
                     editView.setText(ReadBookConfig.durConfig.name)
+                    root.applyUiBodyTypefaceDeep(requireContext().uiTypeface())
                 }
                 customView { alertBinding.root }
                 okButton {
@@ -244,6 +258,16 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
             setCurStatusIconDark(isChecked)
             (activity as? ReadBookActivity)?.upSystemUiVisibility()
         }
+        binding.swScrollFollowBg.setOnCheckedChangeListener { _, isChecked ->
+            ReadBookConfig.durConfig.setCurReadScrollFollowBackground(isChecked)
+            postEvent(EventBus.UP_CONFIG, arrayListOf(1, 5))
+        }
+        val updateTextShadow: (Int) -> Unit = {
+            ReadBookConfig.paperInkStrength = it
+            postEvent(EventBus.UP_CONFIG, arrayListOf(2, 9, 6))
+        }
+        binding.dsbTextShadow.onChanging = updateTextShadow
+        binding.dsbTextShadow.onChanged = updateTextShadow
         binding.tvTextColor.setOnClickListener {
             ColorPickerDialog.newBuilder()
                 .setColor(curTextColor())
@@ -262,7 +286,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
         }
         binding.tvBgColor.setOnClickListener {
             val bgColor =
-                if (curBgType() == 0) curBgStr().toColorInt()
+                if (curBgType() == 0) curBgColor()
                 else "#015A86".toColorInt()
             ColorPickerDialog.newBuilder()
                 .setColor(bgColor)
@@ -342,7 +366,8 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
                 exportFiles.add(bgExportFile)
             }
             val configZipPath = FileUtils.getPath(requireContext().externalCache, configFileName)
-            if (ZipUtils.zipFiles(exportFiles, File(configZipPath))) {
+            val uniqueExportFiles = exportFiles.distinctBy { it.name }
+            if (ZipUtils.zipFiles(uniqueExportFiles, File(configZipPath))) {
                 val exportDir = FileDoc.fromDir(uri)
                 exportDir.find(exportFileName)?.delete()
                 val exportFileDoc = exportDir.createFileIfNotExist(exportFileName)
@@ -378,6 +403,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
     private fun importNetConfigAlert() {
         alert("输入地址") {
             val alertBinding = DialogEditTextBinding.inflate(layoutInflater)
+            alertBinding.root.applyUiBodyTypefaceDeep(requireContext().uiTypeface())
             customView { alertBinding.root }
             okButton {
                 alertBinding.editView.text?.toString()?.let { url ->

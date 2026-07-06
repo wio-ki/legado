@@ -26,7 +26,9 @@ import io.legado.app.ui.book.group.GroupEditDialog
 import io.legado.app.ui.book.info.BookInfoActivity
 import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.main.bookshelf.BaseBookshelfFragment
+import io.legado.app.utils.applyMainBottomBarPadding
 import io.legado.app.utils.cnCompare
+import io.legado.app.utils.dpToPx
 import io.legado.app.utils.flowWithLifecycleAndDatabaseChangeFirst
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.setEdgeEffectColor
@@ -85,7 +87,10 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
 
     private fun initRecyclerView() {
         binding.rvBookshelf.setEdgeEffectColor(primaryColor)
+        binding.rvBookshelf.clipToPadding = true
+        binding.rvBookshelf.applyMainBottomBarPadding()
         binding.refreshLayout.setColorSchemeColors(accentColor)
+        binding.refreshLayout.setProgressViewOffset(true, (-28).dpToPx(), 56.dpToPx())
         binding.refreshLayout.setOnRefreshListener {
             binding.refreshLayout.isRefreshing = false
             activityViewModel.upToc(books, onlyUpdateRead)
@@ -117,7 +122,7 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
                             outRect.set(bookshelfMargin, bookshelfMargin + 24, bookshelfMargin, bookshelfMargin)
                         }
                         totalRows - 1 -> { //最后一行加额外下边距
-                            outRect.set(bookshelfMargin, bookshelfMargin, bookshelfMargin, bookshelfMargin + 24)
+                            outRect.set(bookshelfMargin, bookshelfMargin, bookshelfMargin, bookshelfMargin)
                         }
                         else -> {
                             outRect.set(bookshelfMargin, bookshelfMargin, bookshelfMargin, bookshelfMargin)
@@ -129,7 +134,7 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
                             outRect.set(0, bookshelfMargin + 24, 0, bookshelfMargin)
                         }
                         itemCount - 1 -> {
-                            outRect.set(0, bookshelfMargin, 0, bookshelfMargin + 24)
+                            outRect.set(0, bookshelfMargin, 0, bookshelfMargin)
                         }
                         else -> {
                             outRect.set(0, bookshelfMargin, 0, bookshelfMargin)
@@ -228,6 +233,11 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
             return true
         }
         return false
+    }
+
+    fun switchToGroupId(targetGroupId: Long) {
+        groupId = targetGroupId
+        initBooksData()
     }
 
     override fun onQueryTextSubmit(query: String?): Boolean {

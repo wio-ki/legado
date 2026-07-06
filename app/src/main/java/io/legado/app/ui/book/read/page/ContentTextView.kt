@@ -1,16 +1,25 @@
 package io.legado.app.ui.book.read.page
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import android.widget.ScrollView
+import android.widget.TextView
 import io.legado.app.R
+import io.legado.app.constant.AppLog
+import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.Bookmark
+import io.legado.app.help.PaperInkHelper
 import io.legado.app.help.book.isOnLineTxt
 import io.legado.app.help.config.AppConfig
+import io.legado.app.lib.dialogs.alert
 import io.legado.app.model.ReadBook
+import io.legado.app.model.localBook.EpubFile
 import io.legado.app.ui.association.OpenUrlConfirmActivity
 import io.legado.app.ui.book.read.page.delegate.PageDelegate
 import io.legado.app.ui.book.read.page.entities.TextLine
@@ -29,6 +38,7 @@ import io.legado.app.ui.widget.dialog.PhotoDialog
 import io.legado.app.utils.activity
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.getCompatColor
+import io.legado.app.utils.setHtml
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.startActivity
 import io.legado.app.utils.toastOnUi
@@ -62,11 +72,16 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     private val pageFactory get() = callBack.pageFactory
     private val pageDelegate get() = callBack.pageDelegate
     private var pageOffset = 0
+    private var backgroundScrollOffset = 0
+    private var scrollFollowBackgroundDrawable: ScrollFollowBackgroundDrawable? = null
     private var autoPager: AutoPager? = null
     private var isScroll = false
     private val renderRunnable by lazy { Runnable { preRenderPage() } }
     private var lastClickTime = 0L
     private var doubleClick = false
+    private var nativeSelectedText: String? = null
+    private var nativeSelectionRect: RectF? = null
+    private val paperPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     //绘制图片的paint
     val imagePaint by lazy {
@@ -82,8 +97,15 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     /**
      * 设置内容
      */
-    fun setContent(textPage: TextPage) {
+    fun setContent(textPage: TextPage, resetBackgroundOffset: Boolean = true) {
+        if (this.textPage !== textPage) {
+            nativeSelectedText = null
+            nativeSelectionRect = null
+        }
         this.textPage = textPage
+        if (resetBackgroundOffset) {
+            backgroundScrollOffset = 0
+        }
         // 非滑动翻页动画需要同步重绘，不然翻页可能会出现闪烁
         if (isScroll) {
             postInvalidate()
@@ -96,7 +118,9 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         super.onSizeChanged(w, h, oldw, oldh)
         if (!isMainView) return
         ChapterProvider.upViewSize(w, h)
-        textPage.format()
+        if (!textPage.isNativeEpubPage()) {
+            textPage.format()
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -105,8 +129,12 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         if (longScreenshot) {
             canvas.translate(0f, scrollY.toFloat())
         }
+        drawScrollFollowBackground(canvas)
+        drawPaperEffect(canvas)
         check(!visibleRect.isEmpty) { "visibleRect 为空" }
-        canvas.clipRect(visibleRect)
+        if (!textPage.hasEpubBackground()) {
+            canvas.clipRect(visibleRect)
+        }
         drawPage(canvas)
     }
 
@@ -116,17 +144,26 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     private fun drawPage(canvas: Canvas) {
         var relativeOffset = relativeOffset(0)
         textPage.draw(this, canvas, relativeOffset)
-        if (!callBack.isScroll) return
-        //滚动翻页
-        if (!pageFactory.hasNext()) return
-        val textPage1 = relativePage(1)
-        relativeOffset += textPage.height
-        textPage1.draw(this, canvas, relativeOffset)
-        if (!pageFactory.hasNextPlus()) return
-        relativeOffset += textPage1.height
-        if (relativeOffset < ChapterProvider.visibleHeight) {
-            val textPage2 = relativePage(2)
-            textPage2.draw(this, canvas, relativeOffset)
+        if (callBack.isScroll) {
+            if (!pageFactory.hasNext()) {
+                nativeSelectionRect?.let { rect ->
+                    canvas.drawRect(rect, selectedPaint)
+                }
+                return
+            }
+            val textPage1 = relativePage(1)
+            relativeOffset += textPage.height
+            textPage1.draw(this, canvas, relativeOffset)
+            if (pageFactory.hasNextPlus()) {
+                relativeOffset += textPage1.height
+                if (relativeOffset < ChapterProvider.visibleHeight) {
+                    val textPage2 = relativePage(2)
+                    textPage2.draw(this, canvas, relativeOffset)
+                }
+            }
+        }
+        nativeSelectionRect?.let { rect ->
+            canvas.drawRect(rect, selectedPaint)
         }
     }
 
@@ -143,12 +180,15 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
      * pageOffset + textPage.height 为 textPage 下方的高度
      */
     fun scroll(mOffset: Int) {
+        val startPageOffset = pageOffset
+        var backgroundDelta = mOffset
         pageOffset += mOffset
         if (longScreenshot) {
             scrollY += -mOffset
         }
         if (!pageFactory.hasPrev() && pageOffset > 0) {
             pageOffset = 0
+            backgroundDelta = pageOffset - startPageOffset
             pageDelegate?.abortAnim()
         } else if (!pageFactory.hasNext()
             && pageOffset < 0
@@ -156,12 +196,14 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         ) {
             val offset = (ChapterProvider.visibleHeight - textPage.height).toInt()
             pageOffset = min(0, offset)
+            backgroundDelta = pageOffset - startPageOffset
             pageDelegate?.abortAnim()
         } else if (pageOffset > 0) {
             if (pageFactory.moveToPrev(true)) {
                 pageOffset -= textPage.height.toInt()
             } else {
                 pageOffset = 0
+                backgroundDelta = pageOffset - startPageOffset
                 pageDelegate?.abortAnim()
             }
         } else if (pageOffset < -textPage.height) {
@@ -170,9 +212,11 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                 pageOffset += height.toInt()
             } else {
                 pageOffset = -height.toInt()
+                backgroundDelta = pageOffset - startPageOffset
                 pageDelegate?.abortAnim()
             }
         }
+        backgroundScrollOffset += backgroundDelta
         postInvalidate()
     }
 
@@ -210,6 +254,65 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
      */
     fun resetPageOffset() {
         pageOffset = 0
+        backgroundScrollOffset = 0
+        invalidateBackgroundHost()
+    }
+
+    fun getBackgroundOffset(): Int {
+        return backgroundScrollOffset
+    }
+
+    fun setScrollFollowBackground(bitmap: Bitmap?, alpha: Int) {
+        scrollFollowBackgroundDrawable = bitmap?.let {
+            ScrollFollowBackgroundDrawable(it) { getBackgroundOffset() }.apply {
+                setAlpha(alpha)
+            }
+        }
+        postInvalidate()
+    }
+
+    fun setScrollFollowBackgroundAlpha(alpha: Int) {
+        scrollFollowBackgroundDrawable?.setAlpha(alpha)
+        postInvalidate()
+    }
+
+    private fun invalidateBackgroundHost() {
+        postInvalidateOnAnimation()
+    }
+
+    private fun drawScrollFollowBackground(canvas: Canvas) {
+        scrollFollowBackgroundDrawable?.let {
+            it.setBounds(0, 0, width, height)
+            it.draw(canvas)
+        }
+    }
+
+    private fun drawPaperEffect(canvas: Canvas) {
+        PaperInkHelper.drawBackground(canvas, width, height, paperPaint)
+    }
+
+    fun drawTextWithPaperInk(
+        canvas: Canvas,
+        text: String,
+        start: Int,
+        end: Int,
+        x: Float,
+        y: Float,
+        paint: Paint,
+        enableBlend: Boolean = true
+    ) {
+        PaperInkHelper.drawText(canvas, text, start, end, x, y, paint, enableBlend)
+    }
+
+    fun drawTextWithPaperInk(
+        canvas: Canvas,
+        text: String,
+        x: Float,
+        y: Float,
+        paint: Paint,
+        enableBlend: Boolean = true
+    ) {
+        drawTextWithPaperInk(canvas, text, 0, text.length, x, y, paint, enableBlend)
     }
 
     /**
@@ -219,7 +322,11 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         x: Float,
         y: Float,
         select: (textPos: TextPos) -> Unit,
-    ) {
+    ): Boolean {
+        if (isNativeEpubHit(x, y)) {
+            return true
+        }
+        var handled = false
         touch(x, y) { _, textPos, _, _, column ->
             when (column) {
                 is ImageColumn -> callBack.onImageLongPress(x, y, column.src)
@@ -227,14 +334,17 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                     if (!selectAble) return@touch
                     column.selected = true
                     select(textPos)
+                    handled = true
                 }
                 is TextHtmlColumn -> {
                     if (!selectAble) return@touch
                     column.selected = true
                     select(textPos)
+                    handled = true
                 }
             }
         }
+        return handled
     }
 
     /**
@@ -251,16 +361,17 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         } else {
             false
         }
+        handleEpubNoteClick(x, y)?.let { return it }
         var handled = false
         touch(x, y) { _, textPos, textPage, textLine, column ->
             when (column) {
                 is ButtonColumn -> {
-                    context.toastOnUi("Button Pressed!")
+                    context.toastOnUi(R.string.epub_button_pressed)
                     handled = true
                 }
 
                 is ReviewColumn -> {
-                    context.toastOnUi("Button Pressed!")
+                    context.toastOnUi(R.string.epub_button_pressed)
                     handled = true
                 }
 
@@ -287,13 +398,13 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                         handled = false
                     }
                     "4" -> { //双击
+                        val click = column.click
                         if (doubleClick) {
-                            val click = column.click
                             if (!click.isNullOrBlank()) {
                                 callBack.clickImg(click, column.src)
                                 handled = true
                             }
-                        } else {
+                        } else if (!click.isNullOrBlank()) {
                             handled = true
                         }
                     }
@@ -309,8 +420,12 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                 }
                 is TextHtmlColumn -> {
                     column.linkUrl?.let {
-                        activity?.startActivity<OpenUrlConfirmActivity> {
-                            putExtra("uri", it)
+                        if (it.startsWith(EPUB_MEDIA_LINK_PREFIX)) {
+                            context.toastOnUi(R.string.epub_media_not_supported)
+                        } else {
+                            activity?.startActivity<OpenUrlConfirmActivity> {
+                                putExtra("uri", it)
+                            }
                         }
                         handled = true
                     }
@@ -318,6 +433,55 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
             }
         }
         return handled
+    }
+
+    private fun handleEpubNoteClick(x: Float, y: Float): Boolean? {
+        val book = ReadBook.book ?: return null
+        for (relativePos in 0..2) {
+            if (relativePos > 0 && !callBack.isScroll) break
+            val offset = relativeOffset(relativePos)
+            if (relativePos > 0 && offset >= ChapterProvider.visibleHeight) break
+            val page = relativePage(relativePos)
+            val href = page.findEpubLinkAt(x, y - offset) ?: continue
+            AppLog.put("EPUB Footnote click hit: href=$href, x=$x, y=${y - offset}, pageLinks=${page.epubLinkDiagnostics()}")
+            if (!href.contains("#")) return null
+            showEpubFootnote(book, href)
+            return true
+        }
+        val page = relativePage(0)
+        if (page.isNativeEpubPage()) {
+            AppLog.put("EPUB Footnote click miss: x=$x, y=$y, pageLinks=${page.epubLinkDiagnostics()}")
+        }
+        return null
+    }
+
+    private fun showEpubFootnote(book: Book, href: String) {
+        footnoteThread.execute {
+            val note = runCatching {
+                EpubFile.getFootnote(book, href)
+            }.getOrNull()
+            post {
+                if (note == null) {
+                    AppLog.put("EPUB Footnote resolve failed: href=$href")
+                    context.toastOnUi(R.string.epub_footnote_load_failed)
+                } else {
+                    val textView = TextView(context).apply {
+                        textSize = 15f
+                        setTextColor(context.getCompatColor(R.color.primaryText))
+                        setPadding(20.dpToPx(), 14.dpToPx(), 20.dpToPx(), 14.dpToPx())
+                        setHtml(note.html)
+                    }
+                    val scrollView = ScrollView(context).apply {
+                        addView(textView)
+                        minimumHeight = 96.dpToPx()
+                    }
+                    context.alert(title = note.title) {
+                        customView { scrollView }
+                        okButton()
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -637,6 +801,8 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     }
 
     fun cancelSelect(clearSearchResult: Boolean = false) {
+        nativeSelectedText = null
+        nativeSelectionRect = null
         val last = if (callBack.isScroll) 2 else 0
         for (relativePos in 0..last) {
             val textPage = relativePage(relativePos)
@@ -659,6 +825,7 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     }
 
     fun getSelectedText(): String {
+        nativeSelectedText?.takeIf { it.isNotBlank() }?.let { return it }
         val textPos = TextPos(0, 0, 0)
         val builder = StringBuilder()
         for (relativePos in selectStart.relativePagePos..selectEnd.relativePagePos) {
@@ -701,6 +868,57 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         return builder.toString()
     }
 
+    fun hasSelection(): Boolean {
+        return !nativeSelectedText.isNullOrBlank() || (selectStart.isSelected() && selectEnd.isSelected())
+    }
+
+    fun hasNativeSelection(): Boolean = !nativeSelectedText.isNullOrBlank()
+
+    private fun isNativeEpubHit(x: Float, y: Float): Boolean {
+        val last = if (callBack.isScroll) 2 else 0
+        for (relativePos in 0..last) {
+            val page = relativePage(relativePos)
+            if (!page.isNativeEpubPage()) continue
+            val offset = relativeOffset(relativePos)
+            val localY = y - offset
+            val href = page.findEpubLinkAt(x, localY)
+            if (href != null) {
+                return false
+            }
+            if (page.findNativeTextSelectionAt(x, localY) != null) {
+                nativeSelectedText = null
+                nativeSelectionRect = null
+                postInvalidate()
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun selectNativeText(x: Float, y: Float): String? {
+        val last = if (callBack.isScroll) 2 else 0
+        for (relativePos in 0..last) {
+            val page = relativePage(relativePos)
+            if (!page.isNativeEpubPage()) continue
+            val offset = relativeOffset(relativePos)
+            val localY = y - offset
+            val selection = page.findNativeTextSelectionAt(x, localY) ?: continue
+            val hitRect = RectF(
+                selection.rect.left + page.epubDrawOffsetX,
+                selection.rect.top + page.epubDrawOffsetY + offset,
+                selection.rect.right + page.epubDrawOffsetX,
+                selection.rect.bottom + page.epubDrawOffsetY + offset
+            )
+            nativeSelectedText = selection.expandedText ?: selection.text
+            nativeSelectionRect = hitRect
+            postInvalidate()
+            upSelectedStart(hitRect.left, hitRect.bottom, hitRect.top)
+            upSelectedEnd(hitRect.right, hitRect.bottom)
+            return selection.text
+        }
+        return null
+    }
+
     fun createBookmark(): Bookmark? {
         val page = relativePage(selectStart.relativePagePos)
         page.getTextChapter().let { chapter ->
@@ -738,7 +956,12 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     }
 
     fun setIsScroll(value: Boolean) {
+        val changed = isScroll != value
         isScroll = value
+        if (changed) {
+            backgroundScrollOffset = 0
+            invalidateBackgroundHost()
+        }
     }
 
     override fun canScrollVertically(direction: Int): Boolean {
@@ -766,7 +989,13 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                 Thread(it, "TextPageRender")
             }
         }
+        private val footnoteThread by lazy {
+            Executors.newSingleThreadExecutor {
+                Thread(it, "EpubFootnote")
+            }
+        }
         private val cursorWidth = 24.dpToPx()
+        private const val EPUB_MEDIA_LINK_PREFIX = "legado-epub-media:"
     }
 
     interface CallBack {

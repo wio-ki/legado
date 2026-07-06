@@ -3,11 +3,15 @@ package io.legado.app.ui.book.read.page.delegate
 import android.content.Context
 import android.graphics.Canvas
 import android.view.MotionEvent
+import android.view.animation.Interpolator
 import android.view.animation.LinearInterpolator
 import android.widget.Scroller
 import androidx.annotation.CallSuper
 import com.google.android.material.snackbar.Snackbar
 import io.legado.app.R
+import io.legado.app.help.book.isEpub
+import io.legado.app.help.config.AppConfig
+import io.legado.app.model.ReadBook
 import io.legado.app.ui.book.read.page.PageView
 import io.legado.app.ui.book.read.page.ReadView
 import io.legado.app.ui.book.read.page.entities.PageDirection
@@ -36,8 +40,10 @@ abstract class PageDelegate(protected val readView: ReadView) {
     protected var viewWidth: Int = readView.width
     protected var viewHeight: Int = readView.height
 
+    protected open fun scrollInterpolator(): Interpolator = LinearInterpolator()
+
     protected val scroller: Scroller by lazy {
-        Scroller(readView.context, LinearInterpolator())
+        Scroller(readView.context, scrollInterpolator())
     }
 
     private val snackBar: Snackbar by lazy {
@@ -122,8 +128,8 @@ abstract class PageDelegate(protected val readView: ReadView) {
     open fun keyTurnPage(direction: PageDirection) {
         if (isRunning) return
         when (direction) {
-            PageDirection.NEXT -> nextPageByAnim(100)
-            PageDirection.PREV -> prevPageByAnim(100)
+            PageDirection.NEXT -> nextPageByAnim(AppConfig.keyPageAnimationSpeed)
+            PageDirection.PREV -> prevPageByAnim(AppConfig.keyPageAnimationSpeed)
             else -> return
         }
     }
@@ -191,6 +197,9 @@ abstract class PageDelegate(protected val readView: ReadView) {
     }
 
     fun postInvalidate() {
+        if (ReadBook.book?.isEpub == true &&
+            AppConfig.epubParseMode == AppConfig.EPUB_PARSE_MODE_CLASSIC
+        ) return
         if (isStarted && isRunning && this is HorizontalPageDelegate) {
             readView.post {
                 if (isStarted && isRunning) {

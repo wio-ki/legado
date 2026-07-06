@@ -8,17 +8,19 @@ import android.view.View
 import androidx.appcompat.app.AlertDialog
 import io.legado.app.R
 import io.legado.app.help.config.AppConfig
+import io.legado.app.lib.theme.applyUiBodyTypeface
+import io.legado.app.lib.theme.dialogSurfaceBackground
 import io.legado.app.utils.applyTint
 
 internal class AndroidAlertBuilder(override val ctx: Context) : AlertBuilder<AlertDialog> {
     private val builder = AlertDialog.Builder(ctx)
 
     override fun setTitle(title: CharSequence) {
-        builder.setTitle(title)
+        builder.setUiTitle(ctx, title)
     }
 
     override fun setTitle(titleResource: Int) {
-        builder.setTitle(titleResource)
+        setTitle(ctx.getString(titleResource))
     }
 
     override fun setMessage(message: CharSequence) {
@@ -38,10 +40,12 @@ internal class AndroidAlertBuilder(override val ctx: Context) : AlertBuilder<Ale
     }
 
     override fun setCustomTitle(customTitle: View) {
+        customTitle.applyUiBodyTypeface(ctx)
         builder.setCustomTitle(customTitle)
     }
 
     override fun setCustomView(customView: View) {
+        customView.applyUiBodyTypeface(ctx)
         builder.setView(customView)
     }
 
@@ -143,29 +147,40 @@ internal class AndroidAlertBuilder(override val ctx: Context) : AlertBuilder<Ale
 
     override fun build(): AlertDialog {
         val dialog = builder.create()
-        if (AppConfig.isEInkMode) {
-            dialog.window?.run {
-                val attr = attributes
-                attr.dimAmount = 0f
-                attr.windowAnimations = 0
-                attributes = attr
-                setBackgroundDrawableResource(R.drawable.bg_eink_border_dialog)
-            }
+        dialog.setOnShowListener {
+            dialog.applyDialogTypeface()
         }
+        dialog.applyDialogWindowStyle()
         return dialog
     }
 
     override fun show(): AlertDialog {
         val dialog = builder.show().applyTint()
-        if (AppConfig.isEInkMode) {
-            dialog.window?.run {
+        dialog.applyDialogTypeface()
+        dialog.applyDialogWindowStyle()
+        return dialog
+    }
+
+    private fun AlertDialog.applyDialogTypeface() {
+        fun apply() {
+            window?.decorView?.applyUiBodyTypeface(ctx)
+            listView?.applyUiBodyTypeface(ctx)
+        }
+        apply()
+        window?.decorView?.post { apply() }
+    }
+
+    private fun AlertDialog.applyDialogWindowStyle() {
+        window?.run {
+            if (AppConfig.isEInkMode) {
                 val attr = attributes
                 attr.dimAmount = 0f
                 attr.windowAnimations = 0
                 attributes = attr
                 setBackgroundDrawableResource(R.drawable.bg_eink_border_dialog)
+            } else {
+                setBackgroundDrawable(ctx.dialogSurfaceBackground)
             }
         }
-        return dialog
     }
 }

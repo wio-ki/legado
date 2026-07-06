@@ -12,6 +12,7 @@ import io.legado.app.constant.EventBus
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.BookContent
+import io.legado.app.help.book.isEpub
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.model.ReadBook
@@ -183,8 +184,8 @@ object ChapterProvider {
 //            reviewPaint.textAlign = Paint.Align.CENTER
         }
         //间距
-        lineSpacingExtra = ReadBookConfig.lineSpacingExtra / 10f
-        paragraphSpacing = ReadBookConfig.paragraphSpacing
+        lineSpacingExtra = ReadBookConfig.lineSpacingExtra.coerceIn(0, 20) / 10f
+        paragraphSpacing = ReadBookConfig.paragraphSpacing.coerceAtLeast(0)
         titleTopSpacing = ReadBookConfig.titleTopSpacing.dpToPx()
         titleBottomSpacing = ReadBookConfig.titleBottomSpacing.dpToPx()
         val bodyIndent = ReadBookConfig.paragraphIndent
@@ -286,7 +287,15 @@ object ChapterProvider {
             return
         }
         if (width != viewWidth || height != viewHeight) {
-            if (width == viewWidth) {
+            if (ReadBook.book?.isEpub == true &&
+                AppConfig.epubParseMode == AppConfig.EPUB_PARSE_MODE_CLASSIC
+            ) {
+                upViewSizeRunnable?.let {
+                    handler.removeCallbacks(it)
+                    upViewSizeRunnable = null
+                }
+                notifyViewSizeChange(width, height)
+            } else if (width == viewWidth) {
                 upViewSizeRunnable = handler.postDelayed(300) {
                     upViewSizeRunnable = null
                     notifyViewSizeChange(width, height)
@@ -343,7 +352,11 @@ object ChapterProvider {
         visibleRight = viewWidth - paddingRight
         visibleBottom = paddingTop + visibleHeight
 
-        if (paddingLeft >= visibleRight || paddingTop >= visibleBottom) {
+        if (visibleWidth <= 0 ||
+            visibleHeight <= 0 ||
+            paddingLeft >= visibleRight ||
+            paddingTop >= visibleBottom
+        ) {
             AppLog.put("边距设置过大，请重新设置", toast = true)
             setFallbackLayout()
         }

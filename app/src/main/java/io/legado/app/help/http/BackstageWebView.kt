@@ -1,6 +1,7 @@
 package io.legado.app.help.http
 
 import android.annotation.SuppressLint
+import android.graphics.Color
 import android.net.http.SslError
 import android.os.Build
 import android.os.Handler
@@ -24,6 +25,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.webView.PooledWebView
 import io.legado.app.help.webView.WebJsExtensions
+import io.legado.app.help.webView.WebJsExtensions.Companion.getInjectionString
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameCache
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameJava
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameSource
@@ -152,6 +154,7 @@ class BackstageWebView(
         val pooledWebView = WebViewPool.acquire(appCtx)
         this.pooledWebView = pooledWebView
         val webView = pooledWebView.realWebView
+        webView.setBackgroundColor(Color.TRANSPARENT)
         webView.onResume() //缓存库拿的需要激活
         val settings = webView.settings
         settings.blockNetworkImage = true
@@ -235,11 +238,13 @@ class BackstageWebView(
             private val intervals = listOf(200L, 400L, 600L, 800L, 1000L)
             private val mWebView: WeakReference<WebView> = WeakReference(webView)
             private val jsStr = if (isRule) {
-                "try{var cache=$nameCache,source=$nameSource,java=$nameJava;}catch(e){}\n$mJavaScript"
+                "$getInjectionString\n$mJavaScript"
             } else mJavaScript
             override fun run() {
                 mWebView.get()?.evaluateJavascript(jsStr) {
-                    handleResult(it)
+                    if (pooledWebView != null) {
+                        handleResult(it)
+                    }
                 }
             }
 

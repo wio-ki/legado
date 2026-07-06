@@ -6,6 +6,9 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
+import android.view.Gravity
+import android.view.ViewGroup
+import android.widget.TextView
 import androidx.activity.viewModels
 import androidx.appcompat.widget.SearchView
 import androidx.fragment.app.Fragment
@@ -18,6 +21,8 @@ import io.legado.app.databinding.ActivityChapterListBinding
 import io.legado.app.help.book.isLocalTxt
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.theme.accentColor
+import io.legado.app.lib.theme.applyUiSearchTypeface
+import io.legado.app.lib.theme.applyUiTabTypeface
 import io.legado.app.lib.theme.primaryTextColor
 import io.legado.app.model.ReadBook
 import io.legado.app.ui.about.AppLogDialog
@@ -25,6 +30,7 @@ import io.legado.app.ui.book.toc.rule.TxtTocRuleDialog
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.widget.dialog.WaitDialog
 import io.legado.app.utils.applyTint
+import io.legado.app.utils.dpToPx
 import io.legado.app.utils.gone
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -59,6 +65,8 @@ class TocActivity : VMBaseActivity<ActivityChapterListBinding, TocViewModel>(),
         binding.viewPager.adapter = TabFragmentPageAdapter()
         tabLayout.setupWithViewPager(binding.viewPager)
         tabLayout.tabGravity = TabLayout.GRAVITY_CENTER
+        setupCenteredTabs()
+        tabLayout.applyUiTabTypeface(this)
         viewModel.bookData.observe(this) {
             menu?.setGroupVisible(R.id.menu_group_text, it.isLocalTxt)
         }
@@ -67,11 +75,31 @@ class TocActivity : VMBaseActivity<ActivityChapterListBinding, TocViewModel>(),
         }
     }
 
+    private fun setupCenteredTabs() {
+        for (index in 0 until tabLayout.tabCount) {
+            val title = when (index) {
+                1 -> getString(R.string.bookmark)
+                else -> getString(R.string.chapter_list)
+            }
+            tabLayout.getTabAt(index)?.customView = TextView(this).apply {
+                text = title
+                background = getDrawable(R.drawable.bg_tab_item_miuix)
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                isSingleLine = true
+                textSize = 14f
+                setTextColor(primaryTextColor)
+                layoutParams = ViewGroup.LayoutParams(96.dpToPx(), 36.dpToPx())
+            }
+        }
+    }
+
     override fun onCompatCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.book_toc, menu)
         this.menu = menu
         val search = menu.findItem(R.id.menu_search)
         searchView = (search.actionView as SearchView).apply {
+            applyUiSearchTypeface(this@TocActivity)
             applyTint(primaryTextColor)
             maxWidth = resources.displayMetrics.widthPixels
             onActionViewCollapsed()

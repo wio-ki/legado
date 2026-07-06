@@ -8,6 +8,7 @@ import androidx.annotation.Keep
 import com.bumptech.glide.Glide
 import com.bumptech.glide.RequestBuilder
 import com.bumptech.glide.load.DataSource
+import com.bumptech.glide.load.DecodeFormat
 import com.bumptech.glide.load.Transformation
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.engine.GlideException
@@ -73,7 +74,7 @@ object BookCover {
             path = appCtx.getPrefString(PreferKey.defaultCover)
         }
         defaultDrawable = runCatching {
-            BitmapUtils.decodeBitmap(path!!, 600, 900)!!.toDrawable(appCtx.resources)
+            BitmapUtils.decodeBitmap(path!!, 600, 800)!!.toDrawable(appCtx.resources)
         }.getOrDefault(appCtx.resources.getDrawable(R.drawable.image_cover_default, null))
     }
 
@@ -91,7 +92,10 @@ object BookCover {
             return ImageLoader.load(context, defaultDrawable)
                 .centerCrop()
         }
-        var options = RequestOptions().set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+        var options = RequestOptions()
+            .format(DecodeFormat.PREFER_ARGB_8888)
+            .disallowHardwareConfig()
+            .set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
         if (sourceOrigin != null) {
             options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
         }
@@ -179,20 +183,28 @@ object BookCover {
         path: String?,
         loadOnlyWifi: Boolean = false,
         sourceOrigin: String? = null,
+        blurRadius: Int = 12,
     ): RequestBuilder<Drawable> {
-        val loadBlur = ImageLoader.load(context, defaultDrawable)
-            .transform(BlurTransformation(25), CenterCrop())
+        val radius = blurRadius.coerceIn(0, 25)
+        val loadBlur = ImageLoader.load(context, defaultDrawable).run {
+            if (radius > 0) transform(BlurTransformation(radius), CenterCrop()) else transform(CenterCrop())
+        }
         if (AppConfig.useDefaultCover) {
             return loadBlur
         }
-        var options = RequestOptions().set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+        var options = RequestOptions()
+            .format(DecodeFormat.PREFER_ARGB_8888)
+            .disallowHardwareConfig()
+            .set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
         if (sourceOrigin != null) {
             options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
         }
         return ImageLoader.load(context, path)
             .apply(options)
-            .transform(BlurTransformation(25), CenterCrop())
-            .transition(DrawableTransitionOptions.withCrossFade(1500))
+            .run {
+                if (radius > 0) transform(BlurTransformation(radius), CenterCrop()) else transform(CenterCrop())
+            }
+            .transition(DrawableTransitionOptions.withCrossFade(300))
             .thumbnail(loadBlur)
     }
 

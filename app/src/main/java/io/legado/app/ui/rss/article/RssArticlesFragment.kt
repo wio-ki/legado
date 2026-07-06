@@ -4,11 +4,11 @@ import android.content.res.Configuration
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.View
-import androidx.fragment.app.activityViewModels
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -26,7 +26,7 @@ import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.rss.read.ReadRss
 import io.legado.app.ui.widget.recycler.LoadMoreView
 import io.legado.app.ui.widget.recycler.VerticalDivider
-import io.legado.app.utils.applyNavigationBarPadding
+import io.legado.app.utils.applyMainBottomBarPadding
 import io.legado.app.utils.setEdgeEffectColor
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
@@ -50,7 +50,9 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
     private var isResumed = false
 
     private val binding by viewBinding(FragmentRssArticlesBinding::bind)
-    private val activityViewModel by activityViewModels<RssSortViewModel>()
+    private val activityViewModel by lazy(LazyThreadSafetyMode.NONE) {
+        ViewModelProvider(parentFragment ?: requireActivity())[RssSortViewModel::class.java]
+    }
     override val viewModel by viewModels<RssArticlesViewModel>()
     private val isPreload by lazy { activityViewModel.rssSource?.preload ?: false }
     private val orientation by lazy { resources.configuration.orientation }
@@ -70,6 +72,8 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
     override val isGridLayout: Boolean
         get() = activityViewModel.articleStyle == 2
     private var fullRefresh = true
+    private val embeddedInModernRss: Boolean
+        get() = parentFragment is io.legado.app.ui.main.rss.RssFragment
 
     override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
         viewModel.init(arguments)
@@ -79,8 +83,11 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
 
     private fun initView() = binding.run {
         refreshLayout.setColorSchemeColors(accentColor)
+        if (embeddedInModernRss) {
+            refreshLayout.isEnabled = false
+        }
         recyclerView.setEdgeEffectColor(primaryColor)
-        recyclerView.applyNavigationBarPadding()
+        recyclerView.applyMainBottomBarPadding(withInitialPadding = true)
         loadMoreView.setOnClickListener {
             if (!loadMoreView.isLoading) {
                 scrollToBottom(true)
@@ -88,7 +95,7 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
         }
         val layoutManager = when (activityViewModel.articleStyle) {
             3 -> {
-                recyclerView.setPadding(20, 0, 20, 0)
+                recyclerView.setPadding(0, 0, 0, 0)
                 recyclerView.addItemDecoration(object : RecyclerView.ItemDecoration() {
                     override fun getItemOffsets(
                         outRect: Rect,
@@ -96,7 +103,7 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
                         parent: RecyclerView,
                         state: RecyclerView.State
                     ) {
-                        outRect.set(20,30,20,30)
+                        outRect.set(12, 30, 12, 30)
                     }
                 })
                 recyclerView.itemAnimator = null
@@ -107,11 +114,11 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
                 }
             }
             2 -> {
-                recyclerView.setPadding(8, 0, 8, 0)
+                recyclerView.setPadding(0, 0, 0, 0)
                 GridLayoutManager(requireContext(), 2)
             }
             4 -> {
-                recyclerView.setPadding(4, 0, 4, 0)
+                recyclerView.setPadding(0, 0, 0, 0)
                 GridLayoutManager(requireContext(), 3)
             }
             else -> {
@@ -147,14 +154,14 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
         })
         if (isPreload) {
             refreshLayout.post {
-                refreshLayout.isRefreshing = true
+                refreshLayout.isRefreshing = !embeddedInModernRss
                 loadArticles()
             }
             return@run
         }
         viewLifecycleOwner.lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                refreshLayout.isRefreshing = true
+                refreshLayout.isRefreshing = !embeddedInModernRss
                 loadArticles()
                 this@launch.cancel()
             }

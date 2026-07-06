@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.widget.FrameLayout
+import android.widget.Magnifier
 import io.legado.app.R
 import io.legado.app.constant.PageAnim
 import io.legado.app.data.entities.BookProgress
@@ -22,6 +23,7 @@ import io.legado.app.ui.book.read.ContentEditDialog
 import io.legado.app.ui.book.read.page.api.DataSource
 import io.legado.app.ui.book.read.page.delegate.CoverPageDelegate
 import io.legado.app.ui.book.read.page.delegate.HorizontalPageDelegate
+import io.legado.app.ui.book.read.page.delegate.LinkedCoverPageDelegate
 import io.legado.app.ui.book.read.page.delegate.NoAnimPageDelegate
 import io.legado.app.ui.book.read.page.delegate.PageDelegate
 import io.legado.app.ui.book.read.page.delegate.ScrollPageDelegate
@@ -65,7 +67,8 @@ class ReadView(context: Context, attrs: AttributeSet) :
     val prevPage by lazy { PageView(context) }
     val curPage by lazy { PageView(context) }
     val nextPage by lazy { PageView(context) }
-    val defaultAnimationSpeed = 300
+    val defaultAnimationSpeed: Int
+        get() = AppConfig.pageAnimationSpeed
     private var pressDown = false
     private var isMove = false
 
@@ -110,6 +113,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
     private val brRect = RectF()
     private val boundary by lazy { BreakIterator.getWordInstance(Locale.getDefault()) }
     private val upProgressThrottle = throttle(200) { post { upProgress() } }
+    private var selectionMagnifier: Magnifier? = null
     val autoPager = AutoPager(this)
     val isAutoPage get() = autoPager.isRunning
 
@@ -148,6 +152,12 @@ class ReadView(context: Context, attrs: AttributeSet) :
         pageDelegate?.setViewSize(w, h)
         if (w > 0 && h > 0) {
             upBg()
+            if (oldw > 0 && oldh > 0 && (w != oldw || h != oldh)) {
+                post {
+                    upContent(resetPageOffset = false)
+                    invalidate()
+                }
+            }
             callBack.upSystemUiVisibility()
         }
     }
@@ -222,6 +232,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
                     removeCallbacks(longPressRunnable)
                     if (isTextSelected) {
                         selectText(event.x, event.y)
+                        showSelectionMagnifier(event.x, event.y)
                     } else {
                         pageDelegate?.onTouch(event)
                     }
@@ -229,6 +240,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
             }
 
             MotionEvent.ACTION_UP -> {
+                dismissSelectionMagnifier()
                 callBack.screenOffTimerStart()
                 removeCallbacks(longPressRunnable)
                 if (!pressDown) return true
@@ -250,6 +262,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                dismissSelectionMagnifier()
                 removeCallbacks(longPressRunnable)
                 if (!pressDown) return true
                 pressDown = false
@@ -267,6 +280,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
 
     fun cancelSelect(clearSearchResult: Boolean = false) {
         if (isTextSelected) {
+            dismissSelectionMagnifier()
             curPage.cancelSelect(clearSearchResult)
             isTextSelected = false
         }
@@ -318,7 +332,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
      */
     private fun onLongPress() {
         kotlin.runCatching {
-            curPage.longPress(startX, startY) { textPos: TextPos ->
+            val handled = curPage.longPress(startX, startY) { textPos: TextPos ->
                 isTextSelected = true
                 pressOnTextSelected = true
                 initialTextPos.upData(textPos)
@@ -383,8 +397,26 @@ class ReadView(context: Context, attrs: AttributeSet) :
                 }
                 curPage.selectStartMoveIndex(startPos)
                 curPage.selectEndMoveIndex(endPos)
+                showSelectionMagnifier(startX, startY)
+            }
+            if (handled && curPage.hasNativeSelection()) {
+                isTextSelected = true
+                pressOnTextSelected = true
+                post { callBack.showTextActionMenu() }
             }
         }
+    }
+
+    private fun showSelectionMagnifier(x: Float, y: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || !isAttachedToWindow) return
+        val safeX = x.coerceIn(0f, width.toFloat())
+        val safeY = y.coerceIn(0f, height.toFloat())
+        (selectionMagnifier ?: Magnifier(this).also { selectionMagnifier = it }).show(safeX, safeY)
+    }
+
+    private fun dismissSelectionMagnifier() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+        selectionMagnifier?.dismiss()
     }
 
     /**
@@ -495,6 +527,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
      * 销毁事件
      */
     fun onDestroy() {
+        dismissSelectionMagnifier()
         pageDelegate?.onDestroy()
         curPage.cancelSelect()
         invalidateTextPage()
@@ -527,6 +560,10 @@ class ReadView(context: Context, attrs: AttributeSet) :
         when (ReadBook.pageAnim()) {
             PageAnim.coverPageAnim -> if (pageDelegate !is CoverPageDelegate) {
                 pageDelegate = CoverPageDelegate(this)
+            }
+
+            PageAnim.linkedCoverPageAnim -> if (pageDelegate !is LinkedCoverPageDelegate) {
+                pageDelegate = LinkedCoverPageDelegate(this)
             }
 
             PageAnim.slidePageAnim -> if (pageDelegate !is SlidePageDelegate) {

@@ -1,0 +1,197 @@
+name: Build APK Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release-apk.yml"
+      - "app/**"
+      - "modules/**"
+      - "gradle/**"
+      - "build.gradle"
+      - "settings.gradle"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradlew.bat"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Prepare version metadata
+        id: meta
+        shell: bash
+        run: |
+          version="3.$(TZ=Asia/Shanghai date +%y.%m%d%H%M)"
+          version_code=$((10000 + GITHUB_RUN_NUMBER))
+          short_sha="$(git rev-parse --short HEAD)"
+          tag="rr-${version}-${GITHUB_RUN_NUMBER}"
+          {
+            echo "version=${version}"
+            echo "version_code=${version_code}"
+            echo "short_sha=${short_sha}"
+            echo "tag=${tag}"
+            echo "built_at=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('modules/web/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Build web assets
+        working-directory: modules/web
+        shell: bash
+        run: |
+          pnpm install
+          pnpm build
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Prepare signing config
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.RELEASE_KEY_STORE }}" ]; then
+            echo "${{ secrets.RELEASE_KEY_STORE }}" | base64 --decode > "$GITHUB_WORKSPACE/app/yuedurr.jks"
+            key_alias="${{ secrets.RELEASE_KEY_ALIAS }}"
+            if [ -z "$key_alias" ]; then
+              key_alias="yuedurr"
+            fi
+            {
+              echo "RELEASE_KEY_PASSWORD=${{ secrets.RELEASE_KEY_PASSWORD }}"
+              echo "RELEASE_STORE_PASSWORD=${{ secrets.RELEASE_STORE_PASSWORD }}"
+              echo "RELEASE_STORE_FILE=./yuedurr.jks"
+              echo "RELEASE_KEY_ALIAS=$key_alias"
+            } >> "$GITHUB_WORKSPACE/gradle.properties"
+          else
+            keytool -genkeypair \
+              -alias yuedurr \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 36500 \
+              -keystore "$GITHUB_WORKSPACE/app/yuedurr.jks" \
+              -storepass yuedurr_local \
+              -keypass yuedurr_local \
+              -dname "CN=yuedurr-local, OU=GitHub Actions, O=wio-ki, L=Shanghai, ST=Shanghai, C=CN" \
+              -noprompt
+            {
+              echo "RELEASE_STORE_FILE=./yuedurr.jks"
+              echo "RELEASE_KEY_ALIAS=yuedurr"
+              echo "RELEASE_STORE_PASSWORD=yuedurr_local"
+              echo "RELEASE_KEY_PASSWORD=yuedurr_local"
+            } >> "$GITHUB_WORKSPACE/gradle.properties"
+          fi
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+          "$GITHUB_WORKSPACE/gradlew" \
+            :app:assembleAppRelease \
+            --build-cache \
+            --parallel \
+            --daemon \
+            --warning-mode all \
+            -PskipVitalLint=true \
+            -PVERSION_NAME="${{ steps.meta.outputs.version }}" \
+            -PVERSION_CODE="${{ steps.meta.outputs.version_code }}"
+
+      - name: Package release files
+        id: package
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/release"
+          apk_file="$(find "$GITHUB_WORKSPACE/app/build/outputs/apk" -name '*.apk' | head -n 1)"
+          if [ -z "$apk_file" ]; then
+            echo "未找到生成的 APK 文件"
+            exit 1
+          fi
+          output_name="yuedurr_${{ steps.meta.outputs.version }}.apk"
+          cp "$apk_file" "$GITHUB_WORKSPACE/release/$output_name"
+          (
+            cd "$GITHUB_WORKSPACE/release"
+            sha256sum "$output_name" > "$output_name.sha256"
+          )
+          {
+            echo "apk_name=$output_name"
+            echo "apk_path=$GITHUB_WORKSPACE/release/$output_name"
+            echo "sha_path=$GITHUB_WORKSPACE/release/$output_name.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuedurr-${{ steps.meta.outputs.version }}
+          path: |
+            ${{ steps.package.outputs.apk_path }}
+            ${{ steps.package.outputs.sha_path }}
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/release-notes.md" <<EOF
+          自动构建的阅读RR APK。
+
+          - 分支: \`${{ github.ref_name }}\`
+          - 提交: \`${{ steps.meta.outputs.short_sha }}\`
+          - 版本: \`${{ steps.meta.outputs.version }}\`
+          - VersionCode: \`${{ steps.meta.outputs.version_code }}\`
+          - 构建时间: \`${{ steps.meta.outputs.built_at }}\`
+
+          文件：
+          - \`${{ steps.package.outputs.apk_name }}\`
+          - \`${{ steps.package.outputs.apk_name }}.sha256\`
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            "${{ steps.package.outputs.apk_path }}" \
+            "${{ steps.package.outputs.sha_path }}" \
+            --title "阅读RR ${{ steps.meta.outputs.version }}" \
+            --notes-file "$GITHUB_WORKSPACE/release-notes.md"

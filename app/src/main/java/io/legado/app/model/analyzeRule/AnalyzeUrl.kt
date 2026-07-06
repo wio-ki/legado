@@ -205,10 +205,11 @@ class AnalyzeUrl(
         //page
         page?.let {
             val matcher = pagePattern.matcher(ruleUrl)
+            val pageIndex = page.coerceAtLeast(1)
             while (matcher.find()) {
                 val pages = matcher.group(1)!!.split(",")
-                ruleUrl = if (page < pages.size) { //pages[pages.size - 1]等同于pages.last()
-                    ruleUrl.replace(matcher.group(), pages[page - 1].trim { it <= ' ' })
+                ruleUrl = if (pageIndex <= pages.size) { //pages[pages.size - 1]等同于pages.last()
+                    ruleUrl.replace(matcher.group(), pages[pageIndex - 1].trim { it <= ' ' })
                 } else {
                     ruleUrl.replace(matcher.group(), pages.last().trim { it <= ' ' })
                 }
@@ -725,22 +726,6 @@ class AnalyzeUrl(
     }
 
     /**
-     * 保存cookieJar中的cookie在访问结束时就保存,不等到下次访问
-     */
-    private fun saveCookie() {
-        //书源启用保存cookie时 添加内存中的cookie到数据库
-        if (enabledCookieJar) {
-            val key = "${domain}_cookieJar"
-            CacheManager.getFromMemory(key)?.let {
-                if (it is String) {
-                    CookieStore.replaceCookie(domain, it)
-                    CacheManager.deleteMemory(key)
-                }
-            }
-        }
-    }
-
-    /**
      *获取处理过阅读定义的urlOption和cookie的GlideUrl
      */
     fun getGlideUrl(): GlideUrl {
@@ -773,6 +758,11 @@ class AnalyzeUrl(
         fun AnalyzeUrl.getMediaItem(): MediaItem {
             setCookie()
             return ExoPlayerHelper.createMediaItem(url, headerMap)
+        }
+
+        fun AnalyzeUrl.getMediaRequest(): ExoPlayerHelper.MediaRequest {
+            setCookie()
+            return ExoPlayerHelper.createMediaRequest(url, headerMap)
         }
 
     }

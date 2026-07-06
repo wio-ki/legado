@@ -3,7 +3,6 @@ package io.legado.app.ui.main.rss
 import android.content.Context
 import android.view.View
 import android.view.ViewGroup
-import androidx.appcompat.widget.PopupMenu
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import com.bumptech.glide.request.RequestOptions
@@ -14,6 +13,7 @@ import io.legado.app.data.entities.RssSource
 import io.legado.app.databinding.ItemRssBinding
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.utils.showPopupMenu
 import splitties.views.onLongClick
 
 class RssAdapter(
@@ -62,10 +62,12 @@ class RssAdapter(
     }
 
     private fun showMenu(view: View, rssSource: RssSource) {
-        val popupMenu = PopupMenu(context, view)
-        popupMenu.inflate(R.menu.rss_main_item)
-        popupMenu.menu.findItem(R.id.menu_login).isVisible = !rssSource.loginUrl.isNullOrBlank()
-        popupMenu.setOnMenuItemClickListener {
+        view.showPopupMenu(
+            R.menu.rss_main_item,
+            prepare = {
+                findItem(R.id.menu_login).isVisible = !rssSource.loginUrl.isNullOrBlank()
+            }
+        ) {
             when (it.itemId) {
                 R.id.menu_edit -> callBack.edit(rssSource)
                 R.id.menu_top -> callBack.toTop(rssSource)
@@ -75,7 +77,6 @@ class RssAdapter(
             }
             true
         }
-        popupMenu.show()
     }
 
     interface CallBack {

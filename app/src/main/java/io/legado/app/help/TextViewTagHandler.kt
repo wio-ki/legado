@@ -8,6 +8,7 @@ import android.text.Editable
 import android.text.Html
 import android.text.SpannableStringBuilder
 import android.text.TextPaint
+import android.text.style.BackgroundColorSpan
 import android.text.style.ClickableSpan
 import android.text.style.ReplacementSpan
 import android.view.View
@@ -21,6 +22,10 @@ class TextViewTagHandler(private val onButtonClickListener: OnButtonClickListene
     companion object {
         private const val BUTTON_TAG = "button"
         private const val BUTTON_SPLIT = "@onclick:"
+        private const val HR_TAG = "hr"
+        private const val EPUB_BG_TAG_PREFIX = "epubbg"
+        const val HR_PLACE_CHAR = "—"
+        const val HR_PLACE_STR = "———"
     }
     interface OnButtonClickListener {
         fun onButtonClick(name: String, click: String)
@@ -35,6 +40,7 @@ class TextViewTagHandler(private val onButtonClickListener: OnButtonClickListene
         }
     }
     private val buttonTagStack = mutableListOf<Int>()
+    private val epubBgTagStack = mutableMapOf<String, MutableList<Int>>()
 
     override fun handleTag(
         opening: Boolean,
@@ -43,45 +49,129 @@ class TextViewTagHandler(private val onButtonClickListener: OnButtonClickListene
         xmlReader: XMLReader?
     ) {
         if (output == null || tag == null) return
-        if (tag.equals(BUTTON_TAG, ignoreCase = true)) {
-            if (opening) {
-                buttonTagStack.add(output.length)
-            } else {
-                if (buttonTagStack.isNotEmpty()) {
-                    val start = buttonTagStack.removeAt(buttonTagStack.size - 1)
-                    val buttonText = output.substring(start, output.length)
-                    val parts = buttonText.split(BUTTON_SPLIT, limit = 2)
-                    if (parts.size != 2) {
-                        return
-                    }
-                    val (name, click) = parts
-                    output.replace(start, output.length, name)
-                    val buttonSpan = RoundedButtonSpan(
-                        accentColor = accentColor,
-                        textColor = textColor,
-                        name = name,
-                        click = click,
-                        onClickListener = object : RoundedButtonSpan.OnClickListener {
-                            override fun onClick(name: String, click: String) {
-                                onButtonClickListener?.onButtonClick(name, click)
-                            }
+        when {
+            tag.equals(BUTTON_TAG, ignoreCase = true) ->{
+                if (opening) {
+                    buttonTagStack.add(output.length)
+                } else {
+                    if (buttonTagStack.isNotEmpty()) {
+                        val start = buttonTagStack.removeAt(buttonTagStack.size - 1)
+                        val buttonText = output.substring(start, output.length)
+                        val parts = buttonText.split(BUTTON_SPLIT, limit = 2)
+                        if (parts.size != 2) {
+                            return
                         }
-                    )
-                    output.setSpan(
-                        buttonSpan,
-                        start,
-                        output.length,
-                        SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
+                        val (name, click) = parts
+                        output.replace(start, output.length, name)
+                        val buttonSpan = RoundedButtonSpan(
+                            accentColor = accentColor,
+                            textColor = textColor,
+                            name = name,
+                            click = click,
+                            onClickListener = object : RoundedButtonSpan.OnClickListener {
+                                override fun onClick(name: String, click: String) {
+                                    onButtonClickListener?.onButtonClick(name, click)
+                                }
+                            }
+                        )
+                        output.setSpan(
+                            buttonSpan,
+                            start,
+                            output.length,
+                            SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
 
-                    output.setSpan(
-                        buttonSpan.clickableSpan,
-                        start,
-                        output.length,
-                        SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
+                        output.setSpan(
+                            buttonSpan.clickableSpan,
+                            start,
+                            output.length,
+                            SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
 
+                    }
                 }
+            }
+            tag.equals(HR_TAG, ignoreCase = true) && opening -> {
+                if (output.isNotEmpty() && output.last() != '\n') {
+                    output.append('\n')
+                }
+                val start = output.length
+                output.append(HR_PLACE_CHAR)
+                output.append('\n')
+                val hrSpan = HorizontalRuleSpan()
+                output.setSpan(
+                    hrSpan,
+                    start,
+                    output.length,
+                    SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+            tag.startsWith(EPUB_BG_TAG_PREFIX, ignoreCase = true) -> {
+                val color = tag.substring(EPUB_BG_TAG_PREFIX.length).toEpubTagColor() ?: return
+                val key = tag.lowercase()
+                if (opening) {
+                    epubBgTagStack.getOrPut(key) { mutableListOf() }.add(output.length)
+                } else {
+                    val starts = epubBgTagStack[key] ?: return
+                    if (starts.isEmpty()) return
+                    val start = starts.removeAt(starts.lastIndex)
+                    if (start < output.length) {
+                        output.setSpan(
+                            BackgroundColorSpan(color),
+                            start,
+                            output.length,
+                            SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun String.toEpubTagColor(): Int? {
+        val clean = trim().takeIf { it.length == 6 || it.length == 8 } ?: return null
+        return runCatching {
+            Color.parseColor("#$clean")
+        }.getOrNull()
+    }
+
+    private class HorizontalRuleSpan(
+        private val lineThickness: Int = 1.dpToPx(),
+        private val verticalMargin: Int = 8.dpToPx()
+    ) : ReplacementSpan() {
+        override fun draw(
+            canvas: Canvas,
+            text: CharSequence?,
+            start: Int,
+            end: Int,
+            x: Float,
+            top: Int,
+            y: Int,
+            bottom: Int,
+            paint: Paint
+        ) {
+            val lineHeight = lineThickness.toFloat()
+            val lineY = (top + bottom) / 2f + lineHeight / 2
+            val lineTop = lineY - lineHeight / 2
+            paint.style = Paint.Style.FILL
+            canvas.drawRect(0f, lineTop, canvas.width.toFloat(), lineY, paint)
+        }
+
+        override fun getSize(
+            paint: Paint,
+            text: CharSequence?,
+            start: Int,
+            end: Int,
+            fm: Paint.FontMetricsInt?
+        ): Int {
+            if (fm != null) {
+                fm.ascent = -verticalMargin
+                fm.descent = verticalMargin
+            }
+            return if (text != null) {
+                paint.measureText(text, start, end).toInt()
+            } else {
+                0
             }
         }
     }

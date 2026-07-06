@@ -20,16 +20,21 @@ import io.legado.app.data.entities.BookSource
 import io.legado.app.exception.NoBooksDirException
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
+import io.legado.app.help.book.addType
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.CacheManifestHelper
 import io.legado.app.help.book.getExportFileName
 import io.legado.app.help.book.getRemoteUrl
+import io.legado.app.help.book.isAudio
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.isSameNameAuthor
+import io.legado.app.help.book.isVideo
 import io.legado.app.help.book.isWebFile
 import io.legado.app.help.book.removeType
 import io.legado.app.help.book.updateTo
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.lib.webdav.ObjectNotFoundException
 import io.legado.app.model.AudioPlay
 import io.legado.app.model.BookCover
@@ -47,10 +52,13 @@ import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers.IO
+import java.io.FileNotFoundException
 
 class BookInfoViewModel(application: Application) : BaseViewModel(application) {
     val bookData = MutableLiveData<Book>()
     val chapterListData = MutableLiveData<List<BookChapter>>()
+    val bookInfoLoadingData = MutableLiveData<Boolean>()
+    val chapterLoadingData = MutableLiveData<Boolean>()
     val webFiles = mutableListOf<WebFile>()
     var inBookshelf = false
     var hasCustomBtn = false
@@ -64,6 +72,8 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             val name = intent.getStringExtra("name") ?: ""
             val author = intent.getStringExtra("author") ?: ""
             val bookUrl = intent.getStringExtra("bookUrl") ?: ""
+            val origin = intent.getStringExtra("origin") ?: ""
+            val originName = intent.getStringExtra("originName") ?: ""
             appDb.bookDao.getBook(name, author)?.let {
                 inBookshelf = !it.isNotShelf
                 upBook(it)
@@ -82,6 +92,18 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             }
             appDb.searchBookDao.getFirstByNameAuthor(name, author)?.toBook()?.let {
                 upBook(it)
+                return@execute
+            }
+            if (bookUrl.isNotBlank() && origin.isNotBlank()) {
+                upBook(
+                    Book(
+                        name = name,
+                        author = author,
+                        bookUrl = bookUrl,
+                        origin = origin,
+                        originName = originName
+                    )
+                )
                 return@execute
             }
             throw NoStackTraceException("未找到书籍")
@@ -107,6 +129,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 appDb.bookSourceDao.getBookSource(book.origin)?.also {
                     hasCustomBtn = it.customButton
                 }
+            syncBookSourceName(book)
             bookData.postValue(book)
             upCoverByRule(book)
             if (book.tocUrl.isEmpty() && !book.isLocal) {
@@ -155,9 +178,8 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                     }
                 }
             } else {
-                val bs = bookSource ?: return@executeLazy
-                if (book.originName != bs.bookSourceName) {
-                    book.originName = bs.bookSourceName
+                if (syncBookSourceName(book)) {
+                    bookData.postValue(book)
                 }
             }
         }.onError {
@@ -175,18 +197,35 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         }.start()
     }
 
+    private fun syncBookSourceName(book: Book): Boolean {
+        if (book.isLocal) return false
+        val sourceName = bookSource?.bookSourceName ?: return false
+        if (book.originName == sourceName) return false
+        book.originName = sourceName
+        if (inBookshelf) {
+            appDb.bookDao.update(book)
+        }
+        return true
+    }
+
     fun loadBookInfo(
         book: Book,
         canReName: Boolean = true,
         runPreUpdateJs: Boolean = true,
         scope: CoroutineScope = viewModelScope
     ) {
+        bookInfoLoadingData.postValue(true)
         if (book.isLocal) {
-            LocalBook.upBookInfo(book)
-            bookData.postValue(book)
-            loadChapter(book)
+            try {
+                LocalBook.upBookInfo(book)
+                bookData.postValue(book)
+                loadChapter(book)
+            } finally {
+                bookInfoLoadingData.postValue(false)
+            }
         } else {
             val bookSource = bookSource ?: let {
+                bookInfoLoadingData.postValue(false)
                 chapterListData.postValue(emptyList())
                 context.toastOnUi(R.string.error_no_source)
                 return
@@ -215,6 +254,8 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 }.onError {
                     AppLog.put("获取书籍信息失败\n${it.localizedMessage}", it)
                     context.toastOnUi(R.string.error_get_book_info)
+                }.onFinally {
+                    bookInfoLoadingData.postValue(false)
                 }
         }
     }
@@ -225,21 +266,34 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         scope: CoroutineScope = viewModelScope,
         isFromBookInfo: Boolean = false
     ) {
+        chapterLoadingData.postValue(true)
         if (book.isLocal) {
             execute(scope) {
                 LocalBook.getChapterList(book).let {
                     appDb.bookDao.update(book)
                     appDb.bookChapterDao.delByBook(book.bookUrl)
                     appDb.bookChapterDao.insert(*it.toTypedArray())
+                    CacheManifestHelper.refreshAsync(book, it)
                     ReadBook.onChapterListUpdated(book)
                     bookData.postValue(book)
                     chapterListData.postValue(it)
                 }
             }.onError {
-                context.toastOnUi("LoadTocError:${it.localizedMessage}")
+                when (it) {
+                    is SecurityException, is FileNotFoundException -> {
+                        actionLive.postValue("selectLocalBookDir")
+                    }
+
+                    else -> {
+                        context.toastOnUi("LoadTocError:${it.localizedMessage}")
+                    }
+                }
+            }.onFinally {
+                chapterLoadingData.postValue(false)
             }
         } else {
             val bookSource = bookSource ?: let {
+                chapterLoadingData.postValue(false)
                 chapterListData.postValue(emptyList())
                 context.toastOnUi(R.string.error_no_source)
                 return
@@ -248,6 +302,8 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             WebBook.getChapterList(scope, bookSource, book, runPreUpdateJs, isFromBookInfo = isFromBookInfo)
                 .onSuccess(IO) {
                     if (inBookshelf) {
+                        val oldChapterList = appDb.bookChapterDao.getChapterList(oldBook.bookUrl)
+                        BookHelp.remapContentCache(oldBook, oldChapterList, it)
                         book.removeType(BookType.updateError)
                         appDb.bookDao.replace(oldBook, book)
                         /**
@@ -258,6 +314,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                         }
                         appDb.bookChapterDao.delByBook(oldBook.bookUrl)
                         appDb.bookChapterDao.insert(*it.toTypedArray())
+                        CacheManifestHelper.refreshAsync(book, it)
                         ReadBook.onChapterListUpdated(book)
                     }
                     bookData.postValue(book)
@@ -266,6 +323,8 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                     chapterListData.postValue(emptyList())
                     AppLog.put("获取目录失败\n${it.localizedMessage}", it)
                     context.toastOnUi(R.string.error_get_chapter_list)
+                }.onFinally {
+                    chapterLoadingData.postValue(false)
                 }
         }
     }
@@ -392,6 +451,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 bookData.value?.delete()
                 appDb.bookDao.insert(book)
                 appDb.bookChapterDao.insert(*toc.toTypedArray())
+                CacheManifestHelper.refreshAsync(book, toc)
             }
             bookData.postValue(book)
             chapterListData.postValue(toc)
@@ -419,6 +479,8 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             }
             appDb.bookDao.getBook(book.name, book.author)?.let {
                 book.durChapterIndex = it.durChapterIndex
+                book.durVolumeIndex = it.durVolumeIndex
+                book.chapterInVolumeIndex = it.chapterInVolumeIndex
                 book.durChapterPos = it.durChapterPos
                 book.durChapterTitle = it.durChapterTitle
             }
@@ -437,6 +499,30 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         execute {
             chapterListData.value?.let {
                 appDb.bookChapterDao.insert(*it.toTypedArray())
+                bookData.value?.let { book -> CacheManifestHelper.refreshAsync(book, it) }
+            }
+        }.onSuccess {
+            success?.invoke()
+        }
+    }
+
+    fun saveBookAtChapter(book: Book, chapter: BookChapter, success: (() -> Unit)?) {
+        execute {
+            book.durChapterIndex = chapter.index
+            book.durChapterPos = 0
+            book.durChapterTitle = chapter.title
+            if (!inBookshelf) {
+                book.addType(BookType.notShelf)
+                if (book.order == 0) {
+                    book.order = appDb.bookDao.minOrder - 1
+                }
+                book.save()
+            } else {
+                appDb.bookDao.update(book)
+            }
+            chapterListData.value?.let {
+                appDb.bookChapterDao.insert(*it.toTypedArray())
+                CacheManifestHelper.refreshAsync(book, it)
             }
         }.onSuccess {
             success?.invoke()
@@ -452,6 +538,8 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 }
                 appDb.bookDao.getBook(book.name, book.author)?.let {
                     book.durChapterIndex = it.durChapterIndex
+                    book.durVolumeIndex = it.durVolumeIndex
+                    book.chapterInVolumeIndex = it.chapterInVolumeIndex
                     book.durChapterPos = it.durChapterPos
                     book.durChapterTitle = it.durChapterTitle
                 }
@@ -465,6 +553,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             }
             chapterListData.value?.let {
                 appDb.bookChapterDao.insert(*it.toTypedArray())
+                bookData.value?.let { book -> CacheManifestHelper.refreshAsync(book, it) }
             }
             inBookshelf = true
         }.onSuccess {
@@ -480,9 +569,16 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         return book
     }
 
-    fun delBook(deleteOriginal: Boolean = false, success: (() -> Unit)? = null) {
+    fun delBook(
+        deleteOriginal: Boolean = false,
+        deleteCache: Boolean = false,
+        success: (() -> Unit)? = null
+    ) {
         execute {
             bookData.value?.let {
+                if (deleteCache) {
+                    clearBookCache(it)
+                }
                 it.delete()
                 inBookshelf = false
                 if (it.isLocal) {
@@ -494,15 +590,30 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         }
     }
 
+    private fun clearBookCache(book: Book) {
+        if (book.isAudio || book.isVideo) {
+            appDb.bookChapterDao.getChapterList(book.bookUrl)
+                .forEach {
+                    if (book.isVideo) {
+                        ExoPlayerHelper.removeVideoCache(it.resourceUrl, book)
+                    } else {
+                        ExoPlayerHelper.removeMediaCache(it.resourceUrl, book)
+                    }
+                }
+        }
+        ExoPlayerHelper.releaseBookCaches(book)
+        BookHelp.clearCache(book)
+        if (ReadBook.book?.bookUrl == book.bookUrl) {
+            ReadBook.clearTextChapter()
+        }
+        if (ReadManga.book?.bookUrl == book.bookUrl) {
+            ReadManga.clearMangaChapter()
+        }
+    }
+
     fun clearCache(book: Book) {
         execute {
-            BookHelp.clearCache(book)
-            if (ReadBook.book?.bookUrl == book.bookUrl) {
-                ReadBook.clearTextChapter()
-            }
-            if (ReadManga.book?.bookUrl == book.bookUrl) {
-                ReadManga.clearMangaChapter()
-            }
+            clearBookCache(book)
         }.onSuccess {
             context.toastOnUi(R.string.clear_cache_success)
         }.onError {
