@@ -1,6 +1,9 @@
 package io.legado.app.lib.webdav
 
-open class WebDavException(msg: String) : Exception(msg) {
+open class WebDavException(
+    msg: String,
+    val responseCode: Int? = null
+) : Exception(msg) {
 
     override fun fillInStackTrace(): Throwable {
         return this
@@ -8,4 +11,4 @@ open class WebDavException(msg: String) : Exception(msg) {
 
 }
 
-class ObjectNotFoundException(msg: String) : WebDavException(msg)
+class ObjectNotFoundException(msg: String) : WebDavException(msg, 404)

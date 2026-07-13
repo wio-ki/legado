@@ -35,12 +35,17 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
 import splitties.init.appCtx
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 /**
  * webDav初始化会访问网络,不要放到主线程
  */
 object AppWebDav {
     private const val defaultWebDavUrl = "https://dav.jianguoyun.com/dav/"
+    private const val backupManifestSuffix = ".legado-backup.json"
+    private const val backupPartSuffix = ".legado-backup-part-"
+    private const val backupPartSize = 512 * 1024
     private val bookProgressUrl get() = "${rootWebDavUrl}bookProgress/"
     private val exportsWebDavUrl get() = "${rootWebDavUrl}books/"
     private val bgWebDavUrl get() = "${rootWebDavUrl}background/"
@@ -55,6 +60,18 @@ object AppWebDav {
     val isOk get() = authorization != null
 
     val isJianGuoYun get() = rootWebDavUrl.startsWith(defaultWebDavUrl, true)
+
+    data class BackupInfo(
+        val name: String,
+        val lastModify: Long
+    )
+
+    private data class BackupPartsManifest(
+        val version: Int,
+        val fileName: String,
+        val fileSize: Long,
+        val parts: List<String>
+    )
 
     init {
         runBlocking {
@@ -115,9 +132,10 @@ object AppWebDav {
                 AlphanumComparator.compare(o1.displayName, o2.displayName)
             }.reversed()
             files.forEach { webDav ->
-                val name = webDav.displayName
-                if (name.startsWith("backup")) {
-                    names.add(name)
+                getBackupFileName(webDav.displayName)?.let { name ->
+                    if (!names.contains(name)) {
+                        names.add(name)
+                    }
                 }
             }
         } ?: throw NoStackTraceException("webDav没有配置")
@@ -143,8 +161,13 @@ object AppWebDav {
         onDownloadFinish: (() -> Unit)? = null
     ) {
         authorization?.let {
-            val webDav = WebDav(rootWebDavUrl + name, it)
-            webDav.downloadTo(Backup.zipFilePath, true, onProgress)
+            val manifest = getBackupPartsManifest(name, it)
+            if (manifest == null) {
+                WebDav(rootWebDavUrl + name, it)
+                    .downloadTo(Backup.zipFilePath, true, onProgress)
+            } else {
+                downloadBackupParts(manifest, it, onProgress)
+            }
             onDownloadFinish?.invoke()
             FileUtils.delete(Backup.backupPath)
             ZipUtils.unZipToPath(File(Backup.zipFilePath), Backup.backupPath)
@@ -153,26 +176,26 @@ object AppWebDav {
 
     suspend fun hasBackUp(backUpName: String): Boolean {
         authorization?.let {
-            val url = "$rootWebDavUrl${backUpName}"
-            return WebDav(url, it).exists()
+            return WebDav(getBackupManifestUrl(backUpName), it).exists()
+                    || WebDav(rootWebDavUrl + backUpName, it).exists()
         }
         return false
     }
 
-    suspend fun lastBackUp(): Result<WebDavFile?> {
+    suspend fun lastBackUp(): Result<BackupInfo?> {
         return kotlin.runCatching {
             authorization?.let {
-                var lastBackupFile: WebDavFile? = null
+                var lastBackup: BackupInfo? = null
                 WebDav(rootWebDavUrl, it).listFiles().reversed().forEach { webDavFile ->
-                    if (webDavFile.displayName.startsWith("backup")) {
-                        if (lastBackupFile == null
-                            || webDavFile.lastModify > lastBackupFile.lastModify
+                    getBackupFileName(webDavFile.displayName)?.let { name ->
+                        if (lastBackup == null
+                            || webDavFile.lastModify > lastBackup!!.lastModify
                         ) {
-                            lastBackupFile = webDavFile
+                            lastBackup = BackupInfo(name, webDavFile.lastModify)
                         }
                     }
                 }
-                lastBackupFile
+                lastBackup
             }
         }
     }
@@ -186,7 +209,133 @@ object AppWebDav {
         if (!NetworkUtils.isAvailable()) return
         authorization?.let {
             val putUrl = "$rootWebDavUrl$fileName"
-            WebDav(putUrl, it).upload(Backup.zipFilePath, onProgress = onProgress)
+            try {
+                WebDav(putUrl, it).upload(Backup.zipFilePath, onProgress = onProgress)
+                val manifestWebDav = WebDav(getBackupManifestUrl(fileName), it)
+                if (manifestWebDav.exists()) {
+                    manifestWebDav.delete()
+                }
+            } catch (e: WebDavException) {
+                if (e.responseCode != 413) throw e
+                uploadBackupParts(fileName, File(Backup.zipFilePath), it, onProgress)
+            }
+        }
+    }
+
+    private fun getBackupFileName(name: String): String? {
+        return when {
+            name.startsWith("backup") && name.endsWith(".zip") -> name
+            name.startsWith("backup") && name.endsWith(backupManifestSuffix) -> {
+                name.removeSuffix(backupManifestSuffix).takeIf { it.endsWith(".zip") }
+            }
+
+            else -> null
+        }
+    }
+
+    private fun getBackupManifestUrl(fileName: String): String {
+        return "$rootWebDavUrl$fileName$backupManifestSuffix"
+    }
+
+    private fun getBackupPartName(fileName: String, index: Int): String {
+        return "$fileName$backupPartSuffix${index.toString().padStart(4, '0')}"
+    }
+
+    private suspend fun getBackupPartsManifest(
+        fileName: String,
+        authorization: Authorization
+    ): BackupPartsManifest? {
+        val manifestWebDav = WebDav(getBackupManifestUrl(fileName), authorization)
+        if (!manifestWebDav.exists()) return null
+        val manifest = GSON.fromJson(
+            String(manifestWebDav.download(), Charsets.UTF_8),
+            BackupPartsManifest::class.java
+        ) ?: throw WebDavException("备份分片清单无效")
+        if (
+            manifest.version != 1
+            || manifest.fileName != fileName
+            || manifest.fileSize < 0
+            || manifest.parts.isEmpty()
+            || manifest.parts.any { !it.startsWith("$fileName$backupPartSuffix") }
+        ) {
+            throw WebDavException("备份分片清单无效")
+        }
+        return manifest
+    }
+
+    private suspend fun uploadBackupParts(
+        fileName: String,
+        backupFile: File,
+        authorization: Authorization,
+        onProgress: ProgressListener?
+    ) {
+        if (!backupFile.exists()) throw WebDavException("备份文件不存在")
+        val fileSize = backupFile.length()
+        if (fileSize == 0L) throw WebDavException("备份文件为空")
+        val partFile = File(Backup.backupPath, ".webdav-upload-part")
+        val partNames = mutableListOf<String>()
+        val buffer = ByteArray(backupPartSize)
+        var uploaded = 0L
+        try {
+            FileInputStream(backupFile).use { input ->
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    val partName = getBackupPartName(fileName, partNames.size + 1)
+                    FileOutputStream(partFile).use { output ->
+                        output.write(buffer, 0, read)
+                    }
+                    onProgress?.invoke(uploaded, fileSize)
+                    WebDav(rootWebDavUrl + partName, authorization).upload(partFile) { finished, _ ->
+                        onProgress?.invoke(uploaded + finished, fileSize)
+                    }
+                    uploaded += read
+                    partNames.add(partName)
+                }
+            }
+            val manifest = BackupPartsManifest(
+                version = 1,
+                fileName = fileName,
+                fileSize = fileSize,
+                parts = partNames
+            )
+            WebDav(getBackupManifestUrl(fileName), authorization).upload(
+                GSON.toJson(manifest).toByteArray(Charsets.UTF_8),
+                "application/json"
+            )
+            onProgress?.invoke(fileSize, fileSize)
+        } finally {
+            partFile.delete()
+        }
+    }
+
+    private suspend fun downloadBackupParts(
+        manifest: BackupPartsManifest,
+        authorization: Authorization,
+        onProgress: ProgressListener?
+    ) {
+        val backupFile = File(Backup.zipFilePath)
+        backupFile.parentFile?.mkdirs()
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var downloaded = 0L
+        onProgress?.invoke(downloaded, manifest.fileSize)
+        FileOutputStream(backupFile).use { output ->
+            manifest.parts.forEach { partName ->
+                WebDav(rootWebDavUrl + partName, authorization).downloadInputStream().use { input ->
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        output.write(buffer, 0, read)
+                        downloaded += read
+                        onProgress?.invoke(downloaded, manifest.fileSize)
+                    }
+                }
+            }
+        }
+        if (downloaded != manifest.fileSize) {
+            throw WebDavException("备份分片大小不匹配")
         }
     }
 

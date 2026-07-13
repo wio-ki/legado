@@ -396,7 +396,10 @@ open class WebDav(
         }.onFailure {
             currentCoroutineContext().ensureActive()
             AppLog.put("WebDav上传失败\n${it.localizedMessage}", it)
-            throw WebDavException("WebDav上传失败\n${it.localizedMessage}")
+            throw WebDavException(
+                "WebDav上传失败\n${it.localizedMessage}",
+                (it as? WebDavException)?.responseCode
+            )
         }
     }
 
@@ -489,7 +492,10 @@ open class WebDav(
             }
 
             if (response.message.isNotBlank() || body.isBlank()) {
-                throw WebDavException("${url}\n${response.code}:${response.message}")
+                throw WebDavException(
+                    "${url}\n${response.code}:${response.message}",
+                    response.code
+                )
             }
             val document = Jsoup.parse(body)
             val exception = document.getElementsByTag("s:exception").firstOrNull()?.text()
@@ -499,7 +505,10 @@ open class WebDav(
                     message ?: "$path doesn't exist. code:${response.code}"
                 )
             }
-            throw WebDavException(message ?: "未知错误 code:${response.code}")
+            throw WebDavException(
+                message ?: "未知错误 code:${response.code}",
+                response.code
+            )
         }
     }
 

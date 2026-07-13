@@ -1705,7 +1705,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
                 alert(R.string.restore, R.string.webdav_after_local_restore_confirm) {
                     cancelButton()
                     okButton {
-                        viewModel.restoreWebDav(lastBackupFile.displayName)
+                        viewModel.restoreWebDav(lastBackupFile.name)
                     }
                 }
             }
