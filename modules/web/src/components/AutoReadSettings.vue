@@ -40,15 +40,58 @@
         <li class="speed-row">
           <i>阅读速度</i>
           <div class="resize">
-            <span class="less" @click="lessAutoReadSpeed">
+            <button
+              class="less"
+              type="button"
+              aria-label="减小阅读速度"
+              @pointerdown="startContinuousSpeedAdjustment(-1)"
+              @pointerup="stopContinuousSpeedAdjustment"
+              @pointerleave="stopContinuousSpeedAdjustment"
+              @pointercancel="stopContinuousSpeedAdjustment"
+              @click="handleSpeedButtonClick(-1)"
+            >
               <em class="iconfont">&#xe625;</em>
-            </span>
+            </button>
             <b></b>
-            <span class="lang">{{ autoReadSpeed }}</span>
+            <input
+              class="speed-input"
+              type="number"
+              inputmode="numeric"
+              min="1"
+              max="200"
+              :value="autoReadSpeed"
+              aria-label="阅读速度"
+              @blur="confirmAutoReadSpeed"
+              @keydown="handleSpeedInputKeydown"
+            />
             <b></b>
-            <span class="more" @click="moreAutoReadSpeed">
+            <button
+              class="more"
+              type="button"
+              aria-label="增大阅读速度"
+              @pointerdown="startContinuousSpeedAdjustment(1)"
+              @pointerup="stopContinuousSpeedAdjustment"
+              @pointerleave="stopContinuousSpeedAdjustment"
+              @pointercancel="stopContinuousSpeedAdjustment"
+              @click="handleSpeedButtonClick(1)"
+            >
               <em class="iconfont">&#xe626;</em>
-            </span>
+            </button>
+          </div>
+        </li>
+        <li class="speed-preset-row">
+          <i>快捷档位</i>
+          <div class="speed-preset-list">
+            <button
+              v-for="preset in speedPresets"
+              :key="preset.speed"
+              class="speed-preset"
+              :class="{ selected: autoReadSpeed === preset.speed }"
+              type="button"
+              @click="setAutoReadSpeed(preset.speed)"
+            >
+              {{ preset.label }} {{ preset.speed }}
+            </button>
           </div>
         </li>
       </ul>
@@ -59,8 +102,24 @@
 <script setup lang="ts">
 import '../assets/fonts/iconfont.css'
 import settings from '../config/themeConfig'
+import API from '@api'
 
 const store = useBookStore()
+const MIN_AUTO_READ_SPEED = 1
+const MAX_AUTO_READ_SPEED = 200
+const CONTINUOUS_ADJUSTMENT_DELAY = 350
+const CONTINUOUS_ADJUSTMENT_INTERVAL = 100
+const speedPresets = [
+  { label: '一档', speed: 45 },
+  { label: '二档', speed: 55 },
+  { label: '三档', speed: 65 },
+  { label: '四档', speed: 75 },
+] as const
+
+let continuousAdjustmentTimer: number | undefined
+let continuousAdjustmentInterval: number | undefined
+let didStartContinuousAdjustment = false
+let speedChangedDuringContinuousAdjustment = false
 
 const theme = computed(() => store.theme)
 const isNight = computed(() => store.isNight)
@@ -88,12 +147,83 @@ const setAutoReadMode = (mode: 'page' | 'scroll') => {
 const autoReadSpeed = computed(() => {
   return store.config.autoScrollSpeed
 })
-const moreAutoReadSpeed = () => {
-  if (store.config.autoScrollSpeed < 200) store.config.autoScrollSpeed += 1
+const persistAutoReadSpeed = () => {
+  void API.saveReadConfig(store.config).catch(() => undefined)
 }
-const lessAutoReadSpeed = () => {
-  if (store.config.autoScrollSpeed > 1) store.config.autoScrollSpeed -= 1
+
+const setAutoReadSpeed = (value: number | string, persist = true) => {
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) return false
+
+  const speed = Math.min(
+    MAX_AUTO_READ_SPEED,
+    Math.max(MIN_AUTO_READ_SPEED, Math.round(numericValue)),
+  )
+  if (speed === store.config.autoScrollSpeed) return false
+
+  store.config.autoScrollSpeed = speed
+  if (persist) persistAutoReadSpeed()
+  return true
 }
+
+const adjustAutoReadSpeed = (amount: number, persist = true) => {
+  return setAutoReadSpeed(store.config.autoScrollSpeed + amount, persist)
+}
+
+const clearContinuousSpeedAdjustment = () => {
+  if (continuousAdjustmentTimer !== undefined) {
+    window.clearTimeout(continuousAdjustmentTimer)
+    continuousAdjustmentTimer = undefined
+  }
+  if (continuousAdjustmentInterval !== undefined) {
+    window.clearInterval(continuousAdjustmentInterval)
+    continuousAdjustmentInterval = undefined
+  }
+}
+
+const startContinuousSpeedAdjustment = (amount: number) => {
+  clearContinuousSpeedAdjustment()
+  didStartContinuousAdjustment = false
+  speedChangedDuringContinuousAdjustment = false
+  continuousAdjustmentTimer = window.setTimeout(() => {
+    didStartContinuousAdjustment = true
+    speedChangedDuringContinuousAdjustment = adjustAutoReadSpeed(amount, false)
+    continuousAdjustmentInterval = window.setInterval(() => {
+      speedChangedDuringContinuousAdjustment =
+        adjustAutoReadSpeed(amount, false) ||
+        speedChangedDuringContinuousAdjustment
+    }, CONTINUOUS_ADJUSTMENT_INTERVAL)
+  }, CONTINUOUS_ADJUSTMENT_DELAY)
+}
+
+const stopContinuousSpeedAdjustment = () => {
+  clearContinuousSpeedAdjustment()
+  if (speedChangedDuringContinuousAdjustment) {
+    persistAutoReadSpeed()
+    speedChangedDuringContinuousAdjustment = false
+  }
+}
+
+const handleSpeedButtonClick = (amount: number) => {
+  if (!didStartContinuousAdjustment) {
+    adjustAutoReadSpeed(amount)
+  }
+  didStartContinuousAdjustment = false
+}
+
+const confirmAutoReadSpeed = (event: FocusEvent) => {
+  const input = event.currentTarget as HTMLInputElement
+  setAutoReadSpeed(input.value)
+  input.value = String(autoReadSpeed.value)
+}
+
+const handleSpeedInputKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Enter') {
+    ;(event.currentTarget as HTMLInputElement).blur()
+  }
+}
+
+onBeforeUnmount(stopContinuousSpeedAdjustment)
 </script>
 
 <style lang="scss" scoped>
@@ -163,20 +293,32 @@ const lessAutoReadSpeed = () => {
     }
 
     .resize {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
       width: 274px;
       height: 34px;
       vertical-align: middle;
       border-radius: 2px;
 
-      span {
-        display: inline-block;
+      button,
+      .speed-input {
+        box-sizing: border-box;
+        flex: 1;
         width: 89px;
         height: 34px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
         line-height: 34px;
         text-align: center;
         vertical-align: middle;
         cursor: pointer;
+      }
+
+      button {
+        touch-action: manipulation;
 
         em {
           font-style: normal;
@@ -188,10 +330,23 @@ const lessAutoReadSpeed = () => {
         color: #ed4259;
       }
 
-      .lang {
+      .speed-input {
         color: #a6a6a6;
         font-weight: 400;
         font-family: FZZCYSK;
+        outline: none;
+        appearance: textfield;
+
+        &:focus {
+          color: inherit;
+          box-shadow: inset 0 0 0 1px #ed4259;
+        }
+
+        &::-webkit-inner-spin-button,
+        &::-webkit-outer-spin-button {
+          margin: 0;
+          appearance: none;
+        }
       }
 
       b {
@@ -200,11 +355,34 @@ const lessAutoReadSpeed = () => {
         vertical-align: middle;
       }
     }
+
+    .speed-preset-list {
+      display: inline-flex;
+      gap: 8px;
+      vertical-align: middle;
+    }
+
+    .speed-preset {
+      box-sizing: border-box;
+      width: 62px;
+      height: 34px;
+      padding: 0;
+      border-radius: 2px;
+      text-align: center;
+      cursor: pointer;
+      font:
+        12px / 34px PingFangSC-Regular,
+        HelveticaNeue-Light,
+        'Helvetica Neue Light',
+        'Microsoft YaHei',
+        sans-serif;
+    }
   }
 }
 
 .night {
-  .option-item {
+  .option-item,
+  .speed-preset {
     border: 1px solid #666;
     background: rgba(45, 45, 45, 0.5);
   }
@@ -225,7 +403,8 @@ const lessAutoReadSpeed = () => {
 }
 
 .day {
-  .option-item {
+  .option-item,
+  .speed-preset {
     background: rgba(255, 255, 255, 0.5);
     border: 1px solid rgba(0, 0, 0, 0.1);
   }
@@ -245,7 +424,8 @@ const lessAutoReadSpeed = () => {
   }
 }
 
-.option-item:hover {
+.option-item:hover,
+.speed-preset:hover {
   color: #ed4259;
   border: 1px solid #ed4259;
 }
@@ -272,6 +452,16 @@ const lessAutoReadSpeed = () => {
 
       .resize {
         width: 100%;
+      }
+
+      .speed-preset-list {
+        display: flex;
+        width: 100%;
+      }
+
+      .speed-preset {
+        flex: 1;
+        width: auto;
       }
     }
   }
