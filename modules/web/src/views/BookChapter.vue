@@ -356,19 +356,19 @@ type ChapterRenderData = {
   errorMessage?: string
 }
 
-const PAGE_MODE_CHAPTER_BUFFER_SIZE = 2
+const PAGE_MODE_CHAPTER_WINDOW_SIZE = 3
 
 const chapterData = ref<ChapterRenderData[]>([])
 const chapter = ref<HTMLElement[] | HTMLElement>()
 const chapterCache = new Map<number, ChapterRenderData>()
 const chapterRequests = new Map<number, Promise<ChapterRenderData>>()
-const pageModeWindowStartIndex = ref<number | null>(null)
+const pageModeWindowCenterIndex = ref<number | null>(null)
 let pageModeBufferRequestToken = 0
 let pageModeBufferPendingStartIndex: number | null = null
 
-const getPageModeBufferedIndexes = (startIndex: number) => {
-  return Array.from({ length: PAGE_MODE_CHAPTER_BUFFER_SIZE }, (_, offset) => {
-    return startIndex + offset
+const getPageModeBufferedIndexes = (currentIndex: number) => {
+  return Array.from({ length: PAGE_MODE_CHAPTER_WINDOW_SIZE }, (_, offset) => {
+    return currentIndex + offset - 1
   }).filter(index => typeof catalog.value[index] !== 'undefined')
 }
 const buildChapterRenderData = (
@@ -439,6 +439,14 @@ const buildPageModeChapterWindow = (startIndex: number) => {
     .map(index => chapterCache.get(index))
     .filter((data): data is ChapterRenderData => typeof data !== 'undefined')
 }
+const prunePageModeChapterCache = (windowIndexes: number[]) => {
+  const retainedIndexes = new Set(windowIndexes)
+  chapterCache.forEach((_, index) => {
+    if (!retainedIndexes.has(index)) {
+      chapterCache.delete(index)
+    }
+  })
+}
 const getRenderedChapterHeight = (targetIndex: number) => {
   const chapterElements = Array.isArray(chapter.value)
     ? chapter.value
@@ -458,22 +466,27 @@ const applyPageModeChapterWindow = (
   if (nextWindow.length === 0) return
   const currentWindowIndexes = chapterData.value.map(data => data.index)
   const nextWindowIndexes = nextWindow.map(data => data.index)
+  const nextWindowIndexSet = new Set(nextWindowIndexes)
   const isSameWindow =
     currentWindowIndexes.length === nextWindowIndexes.length &&
     currentWindowIndexes.every((index, currentIndex) => {
       return index === nextWindowIndexes[currentIndex]
     })
-  pageModeWindowStartIndex.value = startIndex
-  if (isSameWindow) return
+  pageModeWindowCenterIndex.value = startIndex
+  if (isSameWindow) {
+    prunePageModeChapterCache(nextWindowIndexes)
+    return
+  }
   const scrollTopBeforeUpdate = getScrollElement().scrollTop
   const removedHeight = preserveViewport
     ? chapterData.value
-        .filter(data => data.index < startIndex)
+        .filter(data => !nextWindowIndexSet.has(data.index))
         .reduce((height, data) => {
           return height + getRenderedChapterHeight(data.index)
         }, 0)
     : 0
   chapterData.value = nextWindow
+  prunePageModeChapterCache(nextWindowIndexes)
   nextTick(() => {
     if (preserveViewport && removedHeight > 0) {
       window.scrollTo(0, Math.max(0, scrollTopBeforeUpdate - removedHeight))
@@ -708,11 +721,11 @@ watch(autoReadMode, () => {
   pageModeBufferPendingStartIndex = null
   pageModeBufferRequestToken += 1
   if (autoReadMode.value === 'page' && chapterData.value.length > 0) {
-    const currentWindowStartIndex =
-      pageModeWindowStartIndex.value ?? chapterData.value[0]?.index ?? null
+    const currentWindowCenterIndex =
+      pageModeWindowCenterIndex.value ?? chapterData.value[0]?.index ?? null
     const preserveViewport =
-      currentWindowStartIndex !== null &&
-      chapterIndex.value > currentWindowStartIndex
+      currentWindowCenterIndex !== null &&
+      chapterIndex.value > currentWindowCenterIndex
     preloadPageModeChapterWindow(chapterIndex.value, preserveViewport)
   }
   if (store.autoScrollActive) {
@@ -799,7 +812,7 @@ const getContent = (index: number, reloadChapter = true, chapterPos = 0) => {
     loadingWrapper(
       currentChapterPromise.then(currentChapterData => {
         chapterData.value = [currentChapterData]
-        pageModeWindowStartIndex.value = index
+        pageModeWindowCenterIndex.value = index
         if (currentChapterData.errorMessage) {
           ElMessage({
             message: currentChapterData.errorMessage,
@@ -880,10 +893,10 @@ const onReadedLengthChange = (index: number, pos: number) => {
   if (autoReadMode.value !== 'page') return
   const currentWindowIndexes = chapterData.value.map(data => data.index)
   const nextBufferedIndexes = getPageModeBufferedIndexes(index)
-  const currentWindowStartIndex =
-    pageModeWindowStartIndex.value ?? chapterData.value[0]?.index ?? null
+  const currentWindowCenterIndex =
+    pageModeWindowCenterIndex.value ?? chapterData.value[0]?.index ?? null
   const needsViewportCompensation =
-    currentWindowStartIndex !== null && index > currentWindowStartIndex
+    currentWindowCenterIndex !== null && index > currentWindowCenterIndex
   const hasFullBufferedWindow = nextBufferedIndexes.every(bufferedIndex => {
     return currentWindowIndexes.includes(bufferedIndex)
   })
